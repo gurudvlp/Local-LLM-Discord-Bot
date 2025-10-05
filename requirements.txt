@@ -1,0 +1,13 @@
+# Core Discord functionality
+discord.py>=2.6.3
+
+# HTTP requests for API communication
+requests>=2.32.4
+aiohttp>=3.11.11
+
+# Optional but recommended
+python-dotenv>=1.0.1  
+psutil>=6.1.0  
+
+# For async timeout handling
+async-timeout>=5.0.1
