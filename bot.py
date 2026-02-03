@@ -960,6 +960,7 @@ class DiscordLLMBot:
                 await ctx.send(message)
             except ValueError:
                 await ctx.send(f"❌ Slot must be a number (0-{PersonalityManager.MAX_SLOTS - 1})")
+            return
 
     async def _generate_response(self, messages: List[Dict[str, Any]]) -> Optional[str]:
         """Run LLM generation in executor to avoid blocking"""
