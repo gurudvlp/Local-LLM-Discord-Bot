@@ -495,9 +495,12 @@ class DiscordLLMBot:
                     except:
                         pass
             
-            if should_respond:
+            # Check if this is a prefix command (don't treat commands as regular chat)
+            is_command = message.content.startswith(self.bot.command_prefix)
+
+            if should_respond and not is_command:
                 await self._handle_chat_message(message, is_dm)
-            
+
             await self.bot.process_commands(message)
     
     async def _handle_chat_message(self, message: discord.Message, is_dm: bool):
