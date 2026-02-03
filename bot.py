@@ -240,6 +240,54 @@ class DiscordLLMBot:
     def is_owner(self, user: discord.User) -> bool:
         return user.name.lower() == self.owner_username
 
+    def is_channel_whitelisted(self, message: discord.Message) -> bool:
+        """
+        Check if the message is in a whitelisted server/channel combination.
+        Returns True if channel is whitelisted, False otherwise.
+        Supports both IDs and names for flexible matching.
+        In whitelisted channels, any user can interact with the bot (no user whitelist check needed).
+        """
+        # DMs are never "whitelisted channels" - use user whitelist only
+        if isinstance(message.channel, discord.DMChannel):
+            return False
+
+        whitelisted_servers = self.config.get('whitelisted_servers', [])
+
+        # No whitelisted servers configured
+        if not whitelisted_servers:
+            return False
+
+        # Get current server and channel info
+        guild_id = message.guild.id
+        guild_name = message.guild.name.lower()
+        channel_id = message.channel.id
+        channel_name = message.channel.name.lower()
+
+        # Check each whitelisted server
+        for server_config in whitelisted_servers:
+            # Check if this is the right server (by ID or name)
+            server_match = False
+
+            if 'server_id' in server_config and server_config['server_id'] == guild_id:
+                server_match = True
+            elif 'server' in server_config and server_config['server'].lower() == guild_name:
+                server_match = True
+
+            if not server_match:
+                continue
+
+            # Server matched, now check channels
+            channel_ids = server_config.get('channel_ids', [])
+            channel_names = [c.lower() for c in server_config.get('channels', [])]
+
+            # Check if current channel is whitelisted
+            if channel_id in channel_ids:
+                return True
+            if channel_name in channel_names:
+                return True
+
+        return False
+
     def _resolve_system_prompt(self) -> str:
         """Resolve system prompt, handling file:// URIs"""
         raw_prompt = self.config.get('system_prompt', '')
@@ -409,20 +457,27 @@ class DiscordLLMBot:
                 return
             
             is_dm = isinstance(message.channel, discord.DMChannel)
-            
-            if not self.is_user_whitelisted(message.author, is_dm):
-                logger.info(f"User {message.author.name} not whitelisted for {'DM' if is_dm else 'server'} use")
-                return
+            is_whitelisted_channel = self.is_channel_whitelisted(message)
+
+            # Allow if whitelisted channel OR whitelisted user
+            if not is_whitelisted_channel:
+                if not self.is_user_whitelisted(message.author, is_dm):
+                    logger.info(f"User {message.author.name} not whitelisted for {'DM' if is_dm else 'server'} use")
+                    return
             
             should_respond = False
-            
+
             if is_dm:
                 should_respond = True
+            elif is_whitelisted_channel:
+                # Full speech access in whitelisted channels
+                should_respond = True
             else:
+                # Non-whitelisted: require mention or reply
                 # Check for mention
                 if self.bot.user in message.mentions:
                     should_respond = True
-                
+
                 # Check for reply to bot
                 if message.reference:
                     try:

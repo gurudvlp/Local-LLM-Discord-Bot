@@ -1,0 +1,87 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+ENV/
+env/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.sublime-project
+*.sublime-workspace
+.code-workspace
+
+# Config files with secrets (only commit templates)
+configs/
+!configs/README.md
+!configs/example_config.json
+
+# Logs and Data
+chat_logs/
+chatlogs/
+rlhf_logs/
+*.log
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+.cache/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local development
+*.sqlite
+*.db
+.env.local
+.env.*.local
+
+# Misc
+.vscode-settings.json
+.claude-settings.json
+*.pem
+*.key

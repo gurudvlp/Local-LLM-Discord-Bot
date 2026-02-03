@@ -343,7 +343,80 @@ class ConfigManager:
             print(f"  Server Access: {', '.join(config['server_whitelist'])}")
         else:
             print(Colors.green("\n✅ Only you can use the bot (most secure)\n"))
-        
+
+        # Step 5.5: Server and Channel Whitelisting
+        print(Colors.yellow("Step 5.5: Server and Channel Whitelisting (Optional)\n"))
+        print("Allow unrestricted access in specific channels?")
+        print(Colors.cyan("• Anyone can use the bot in whitelisted channels"))
+        print(Colors.cyan("• No @mention required in whitelisted channels"))
+        print(Colors.cyan("• Useful for dedicated bot channels\n"))
+
+        setup_channels = input("Configure channel whitelisting? (y/n): ").strip().lower()
+
+        if setup_channels == 'y':
+            whitelisted_servers = []
+
+            print(Colors.cyan("\n📍 How to find Server and Channel IDs:"))
+            print(Colors.cyan("   1. Enable Developer Mode in Discord (User Settings → Advanced)"))
+            print(Colors.cyan("   2. Right-click server name → Copy Server ID"))
+            print(Colors.cyan("   3. Right-click channel name → Copy Channel ID"))
+            print(Colors.cyan("   4. Or just use server/channel names\n"))
+
+            while True:
+                print(Colors.yellow("\n➕ Add a server with whitelisted channels:"))
+                print("Enter server ID or name (or press Enter to finish):")
+
+                server_input = input("Server ID/Name: ").strip()
+                if not server_input:
+                    break
+
+                server_config = {}
+
+                # Determine if input is ID or name
+                if server_input.isdigit():
+                    server_config['server_id'] = int(server_input)
+                    print(Colors.green(f"  ✅ Using Server ID: {server_input}"))
+                else:
+                    server_config['server'] = server_input
+                    print(Colors.green(f"  ✅ Using Server Name: {server_input}"))
+
+                # Get channels for this server
+                channels = []
+                channel_ids = []
+
+                print(Colors.cyan("\nAdd channels for this server (Enter to finish):"))
+                while True:
+                    channel_input = input("  Channel ID/Name: ").strip()
+                    if not channel_input:
+                        break
+
+                    if channel_input.isdigit():
+                        channel_ids.append(int(channel_input))
+                        print(Colors.green(f"    ✅ Added Channel ID: {channel_input}"))
+                    else:
+                        channels.append(channel_input)
+                        print(Colors.green(f"    ✅ Added Channel Name: {channel_input}"))
+
+                if channels or channel_ids:
+                    if channels:
+                        server_config['channels'] = channels
+                    if channel_ids:
+                        server_config['channel_ids'] = channel_ids
+                    whitelisted_servers.append(server_config)
+                    print(Colors.green(f"\n✅ Added server with {len(channels) + len(channel_ids)} channel(s)"))
+                else:
+                    print(Colors.yellow("⚠️  No channels added, skipping server"))
+
+            config['whitelisted_servers'] = whitelisted_servers
+
+            if whitelisted_servers:
+                print(Colors.green(f"\n✅ Configured {len(whitelisted_servers)} server(s) with whitelisted channels"))
+            else:
+                print(Colors.yellow("\n⏭️  No servers configured - using user whitelist only"))
+        else:
+            config['whitelisted_servers'] = []
+            print(Colors.green("\n✅ Channel whitelisting disabled - using user whitelist only\n"))
+
         # Step 6: Moderation
         print(Colors.yellow("Step 6: Content Moderation (Optional)\n"))
         print("Enable OpenAI's free content filter?")
@@ -487,12 +560,18 @@ class ConfigManager:
             print(f"  • Delete config: Delete the file {Colors.cyan(f'configs/{config_name}_config.json')}")
             print(f"  • Multiple bots: Create multiple configs with different names")
             print(f"  • Edit whitelist: Modify 'dm_whitelist' and 'server_whitelist' in the config file")
+            print(f"  • Edit channels: Modify 'whitelisted_servers' in the config file")
             
             print("\n" + Colors.cyan("Next steps:"))
             print(Colors.cyan("  1. Bot will start now"))
             print(Colors.cyan("  2. Open Discord"))
-            print(Colors.cyan("  3. DM the bot or mention it in a server"))
-            print(Colors.cyan("  4. Chat with your AI!"))
+            if config.get('whitelisted_servers'):
+                print(Colors.cyan("  3. Use the bot freely in whitelisted channels (no mention required)"))
+                print(Colors.cyan("  4. In other channels, mention the bot or reply to its messages"))
+                print(Colors.cyan("  5. Chat with your AI!"))
+            else:
+                print(Colors.cyan("  3. DM the bot or mention it in a server"))
+                print(Colors.cyan("  4. Chat with your AI!"))
             
             if config.get('rlhf_logging_enabled'):
                 print(Colors.cyan("\n  💡 Try reacting with 👍 or 👎 to bot messages!"))
