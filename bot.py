@@ -894,7 +894,7 @@ class DiscordLLMBot:
             await interaction.response.send_message(embed=embed)
 
         # Prefix Commands for Personality Management
-        @self.bot.command(name="personality", description="Manage personality slots")
+        @self.bot.command(name="personality")
         async def personality_command(ctx: commands.Context, *args):
             """
             Manage personality instructions for the channel.
