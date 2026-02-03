@@ -445,14 +445,36 @@ class ConfigManager:
         print(Colors.cyan("   • In DMs: Single-user mode, just chat naturally"))
         print(Colors.cyan("   • In Servers: Multi-user mode, mention or reply to bot"))
         print(Colors.cyan("   • Only whitelisted users can interact with the bot"))
-        
+
+        # Step 11: Number of Threads (Ollama only)
+        print(Colors.yellow("\nStep 11: Performance Tuning (Optional)\n"))
+        if config['llm_provider'] == 'ollama':
+            print("How many CPU threads should the LLM use?")
+            print("Leave empty to let Ollama decide automatically.\n")
+
+            num_threads = input("Number of threads (or press Enter): ").strip()
+            if num_threads:
+                try:
+                    threads = int(num_threads)
+                    if threads > 0:
+                        config['ollama_num_threads'] = threads
+                        print(Colors.green(f"✅ Will use {threads} threads\n"))
+                    else:
+                        print(Colors.yellow("⏭️  Using Ollama default\n"))
+                except ValueError:
+                    print(Colors.yellow("⏭️  Using Ollama default\n"))
+            else:
+                print(Colors.yellow("⏭️  Using Ollama default\n"))
+        else:
+            print("(LM Studio provider - thread count managed automatically)\n")
+
         if config.get('chat_logging_enabled') or config.get('rlhf_logging_enabled'):
             print(Colors.cyan("\n📊 Data Collection Active:"))
             if config.get('chat_logging_enabled'):
                 print(Colors.cyan("   • Chat logging: ON (only your messages)"))
             if config.get('rlhf_logging_enabled'):
                 print(Colors.cyan("   • RLHF logging: ON (only your reactions)"))
-        
+
         # Save configuration
         print(Colors.blue("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"))
         print(Colors.green("        ✅ Setup Complete!"))

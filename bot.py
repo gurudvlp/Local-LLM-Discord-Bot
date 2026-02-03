@@ -195,7 +195,8 @@ class DiscordLLMBot:
         if config['llm_provider'] == 'ollama':
             self.llm_provider = OllamaProvider(
                 base_url=config['llm_base_url'],
-                model_name=config['model_name']
+                model_name=config['model_name'],
+                num_threads=config.get('ollama_num_threads')
             )
         else:
             self.llm_provider = LMStudioProvider(

@@ -66,10 +66,11 @@ class LLMProvider(ABC):
 
 class OllamaProvider(LLMProvider):
     """Ollama API provider with image and reasoning model support"""
-    
-    def __init__(self, base_url: str = "http://localhost:11434", model_name: str = None):
+
+    def __init__(self, base_url: str = "http://localhost:11434", model_name: str = None, num_threads: int = None):
         self.base_url = base_url.rstrip('/')
         self.model_name = model_name
+        self.num_threads = num_threads
     
     def test_connection(self) -> bool:
         try:
@@ -137,9 +138,15 @@ class OllamaProvider(LLMProvider):
                 "messages": ollama_messages,
                 "stream": False
             }
-            
-            if hasattr(self, 'context_tokens'):
-                payload["options"] = {"num_ctx": self.context_tokens}
+
+            # Add options for context tokens and/or thread count
+            options = {}
+            if hasattr(self, 'context_tokens') and self.context_tokens:
+                options["num_ctx"] = self.context_tokens
+            if self.num_threads:
+                options["num_thread"] = self.num_threads
+            if options:
+                payload["options"] = options
             
             response = requests.post(
                 f"{self.base_url}/api/chat",
@@ -210,8 +217,14 @@ class OllamaProvider(LLMProvider):
                 "stream": True
             }
 
-            if hasattr(self, 'context_tokens'):
-                payload["options"] = {"num_ctx": self.context_tokens}
+            # Add options for context tokens and/or thread count
+            options = {}
+            if hasattr(self, 'context_tokens') and self.context_tokens:
+                options["num_ctx"] = self.context_tokens
+            if self.num_threads:
+                options["num_thread"] = self.num_threads
+            if options:
+                payload["options"] = options
 
             response = requests.post(
                 f"{self.base_url}/api/chat",
