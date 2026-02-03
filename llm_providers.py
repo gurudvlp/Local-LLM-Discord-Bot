@@ -144,7 +144,7 @@ class OllamaProvider(LLMProvider):
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
-                timeout=90
+                timeout=180
             )
             
             if response.status_code == 200:
@@ -216,7 +216,7 @@ class OllamaProvider(LLMProvider):
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
-                timeout=90,
+                timeout=180,
                 stream=True
             )
 
@@ -329,7 +329,7 @@ class LMStudioProvider(LLMProvider):
                 f"{self.base_url}/v1/chat/completions",
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=90
+                timeout=180
             )
             
             if response.status_code == 200:
@@ -411,7 +411,7 @@ class LMStudioProvider(LLMProvider):
                 f"{self.base_url}/v1/chat/completions",
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=90,
+                timeout=180,
                 stream=True
             )
 
