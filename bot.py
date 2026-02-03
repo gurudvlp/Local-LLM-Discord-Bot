@@ -498,17 +498,20 @@ class DiscordLLMBot:
             # Check if this is a prefix command (don't treat commands as regular chat)
             is_command = message.content.startswith(self.bot.command_prefix)
 
-            if should_respond and not is_command:
+            if should_respond:
                 await self._handle_chat_message(message, is_dm)
 
             await self.bot.process_commands(message)
     
     async def _handle_chat_message(self, message: discord.Message, is_dm: bool):
-        
+        # Skip if this is a prefix command (let process_commands handle it)
+        if message.content.startswith(self.bot.command_prefix):
+            return
+
         if message.channel.id in self.processing:
             await message.add_reaction('⏳')
             return
-        
+
         self.processing.add(message.channel.id)
         
         try:
