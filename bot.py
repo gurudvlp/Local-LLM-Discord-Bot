@@ -21,6 +21,7 @@ import re
 
 from llm_providers import OllamaProvider, LMStudioProvider
 from moderation import ModerationService
+from personality_manager import PersonalityManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -136,14 +137,19 @@ class ConversationManager:
             'assistant': assistant_response
         })
     
-    def get_messages_for_llm(self, current_message: Any, username: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Build message list for LLM including system prompt and history"""
+    def get_messages_for_llm(self, current_message: Any, username: Optional[str] = None, personalities: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Build message list for LLM including system prompt, personalities, and history"""
         messages = []
-        
+
         system_content = self.system_prompt
+
+        # Add personality instructions if provided
+        if personalities:
+            system_content += "\n\n" + "\n".join(personalities)
+
         if self.is_multi_user:
             system_content += "\n\nYou are in a group chat with multiple users. Each user message will show [username]: before their message to identify who is speaking. You should respond without using a [botname]: prefix or any similar prefix for your own responses."
-        
+
         messages.append({"role": "system", "content": system_content})
         
         # Add conversation history
@@ -221,7 +227,9 @@ class DiscordLLMBot:
             rlhf_logging_enabled=config.get('rlhf_logging_enabled', False),
             config_name=config_name
         )
-        
+
+        self.personality_manager = PersonalityManager()
+
         self.conversations: Dict[int, ConversationManager] = {}
         self.processing: set = set()
         self.message_cache: Dict[int, Dict[str, Any]] = {}
@@ -529,7 +537,7 @@ class DiscordLLMBot:
                 
                 conv_manager = self._get_conversation_manager(message.channel.id, is_dm)
                 username = message.author.display_name if not is_dm else None
-                
+
                 if images:
                     user_message = {
                         'text': content or "What's in this image?",
@@ -537,8 +545,9 @@ class DiscordLLMBot:
                     }
                 else:
                     user_message = content
-                
-                llm_messages = conv_manager.get_messages_for_llm(user_message, username)
+
+                personalities = self.personality_manager.get_personalities(message.channel.id)
+                llm_messages = conv_manager.get_messages_for_llm(user_message, username, personalities)
                 stream_generator = self._generate_response_stream(llm_messages)
                 sent_message = await self._send_message_reply_streaming(message, stream_generator)
 
@@ -633,7 +642,8 @@ class DiscordLLMBot:
                 
                 conv_manager = self._get_conversation_manager(interaction.channel_id, is_dm)
                 username = interaction.user.display_name if not is_dm else None
-                llm_messages = conv_manager.get_messages_for_llm(message, username)
+                personalities = self.personality_manager.get_personalities(interaction.channel_id)
+                llm_messages = conv_manager.get_messages_for_llm(message, username, personalities)
                 stream_generator = self._generate_response_stream(llm_messages)
                 sent_message = await self._send_interaction_response_streaming(interaction, stream_generator)
 
@@ -879,7 +889,75 @@ class DiscordLLMBot:
             )
             
             await interaction.response.send_message(embed=embed)
-    
+
+        # Prefix Commands for Personality Management
+        @self.bot.command(name="personality", description="Manage personality slots")
+        async def personality_command(ctx: commands.Context, *args):
+            """
+            Manage personality instructions for the channel.
+            Usage:
+              !personality <slot> <text> - Set a personality
+              !personality clear <slot> - Clear a slot
+              !personality clearall - Clear all personalities
+              !personality list - List all personalities
+            """
+            is_dm = isinstance(ctx.channel, discord.DMChannel)
+            if not self.is_user_whitelisted(ctx.author, is_dm):
+                await ctx.send("❌ You are not whitelisted to use this bot.")
+                return
+
+            channel_id = ctx.channel.id
+
+            # Handle subcommands
+            if not args:
+                await ctx.send("❌ Usage: `!personality <slot> <text>` | `!personality clear <slot>` | `!personality clearall` | `!personality list`")
+                return
+
+            first_arg = args[0].lower()
+
+            # List personalities
+            if first_arg == "list":
+                personalities_str = self.personality_manager.list_personalities(channel_id)
+                embed = discord.Embed(
+                    title="📋 Current Personalities",
+                    description=personalities_str,
+                    color=discord.Color.blue()
+                )
+                await ctx.send(embed=embed)
+                return
+
+            # Clear all personalities
+            if first_arg == "clearall":
+                success, message = self.personality_manager.clear_all_personalities(channel_id)
+                await ctx.send(message)
+                return
+
+            # Clear a specific personality
+            if first_arg == "clear":
+                if len(args) < 2:
+                    await ctx.send("❌ Usage: `!personality clear <slot>`")
+                    return
+                try:
+                    slot_num = int(args[1])
+                    success, message = self.personality_manager.clear_personality(channel_id, slot_num)
+                    await ctx.send(message)
+                except ValueError:
+                    await ctx.send(f"❌ Slot must be a number (0-{PersonalityManager.MAX_SLOTS - 1})")
+                return
+
+            # Set a personality (slot and text)
+            if len(args) < 2:
+                await ctx.send("❌ Usage: `!personality <slot> <text>`")
+                return
+
+            try:
+                slot_num = int(first_arg)
+                text = " ".join(args[1:])
+                success, message = self.personality_manager.set_personality(channel_id, slot_num, text)
+                await ctx.send(message)
+            except ValueError:
+                await ctx.send(f"❌ Slot must be a number (0-{PersonalityManager.MAX_SLOTS - 1})")
+
     async def _generate_response(self, messages: List[Dict[str, Any]]) -> Optional[str]:
         """Run LLM generation in executor to avoid blocking"""
         try:
