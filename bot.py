@@ -483,13 +483,19 @@ class DiscordLLMBot:
                     user_message = content
                 
                 llm_messages = conv_manager.get_messages_for_llm(user_message, username)
-                response = await self._generate_response(llm_messages)
-                
+                stream_generator = self._generate_response_stream(llm_messages)
+                sent_message = await self._send_message_reply_streaming(message, stream_generator)
+
+                # Collect full response for logging and processing
+                response = ""
+                if sent_message:
+                    response = sent_message.content
+
                 if response:
                     # Remove username prefix in multi-user mode
                     if not is_dm:
                         response = self.strip_username_prefix(response)
-                    
+
                     # Check moderation on bot response
                     if self.moderation:
                         is_safe, reason = await self.moderation.check_content(response)
@@ -497,11 +503,13 @@ class DiscordLLMBot:
                             print(f"\n⚠️  MODERATION TRIGGERED for bot response:")
                             print(f"   Reason: {reason}")
                             print(f"   Response: {response[:100]}{'...' if len(response) > 100 else ''}")
-                            
+
                             response = "I apologize, but I cannot provide that response as it may contain inappropriate content."
-                    
+                            # Edit the message with moderation override
+                            if sent_message:
+                                await sent_message.edit(content=response)
+
                     conv_manager.add_exchange(user_message, response, username)
-                    sent_message = await self._send_message_reply(message, response)
                     
                     # Log for owner only
                     if self.data_logger.chat_logging_enabled and self.is_owner(message.author):
@@ -570,23 +578,31 @@ class DiscordLLMBot:
                 conv_manager = self._get_conversation_manager(interaction.channel_id, is_dm)
                 username = interaction.user.display_name if not is_dm else None
                 llm_messages = conv_manager.get_messages_for_llm(message, username)
-                response = await self._generate_response(llm_messages)
-                
+                stream_generator = self._generate_response_stream(llm_messages)
+                sent_message = await self._send_interaction_response_streaming(interaction, stream_generator)
+
+                # Collect full response for logging and processing
+                response = ""
+                if sent_message:
+                    response = sent_message.content
+
                 if response:
                     if not is_dm:
                         response = self.strip_username_prefix(response)
-                    
+
                     if self.moderation:
                         is_safe, reason = await self.moderation.check_content(response)
                         if not is_safe:
                             print(f"\n⚠️  MODERATION TRIGGERED for bot response (slash command):")
                             print(f"   Reason: {reason}")
                             print(f"   Response: {response[:100]}{'...' if len(response) > 100 else ''}")
-                            
+
                             response = "I apologize, but I cannot provide that response as it may contain inappropriate content."
-                    
+                            # Edit the message with moderation override
+                            if sent_message:
+                                await sent_message.edit(content=response)
+
                     conv_manager.add_exchange(message, response, username)
-                    sent_message = await self._send_interaction_response(interaction, response)
                     
                     if self.data_logger.chat_logging_enabled and self.is_owner(interaction.user):
                         self.data_logger.log_chat(
@@ -846,13 +862,13 @@ class DiscordLLMBot:
     async def _send_interaction_response(self, interaction: discord.Interaction, response: str) -> Optional[discord.Message]:
         """Send slash command response with character limit handling"""
         MAX_LENGTH = 1900
-        
+
         try:
             if len(response) <= MAX_LENGTH:
                 return await interaction.followup.send(response)
             else:
                 chunks = [response[i:i+MAX_LENGTH] for i in range(0, len(response), MAX_LENGTH)]
-                
+
                 first_msg = None
                 for i, chunk in enumerate(chunks):
                     if i == 0:
@@ -863,7 +879,138 @@ class DiscordLLMBot:
         except Exception as e:
             logger.error(f"Error sending interaction response: {e}")
             return None
-    
+
+    async def _generate_response_stream(self, messages: List[Dict[str, Any]]):
+        """Run LLM generation in executor and yield chunks as they arrive"""
+        loop = asyncio.get_event_loop()
+        queue = asyncio.Queue()
+
+        def collect_chunks_in_executor():
+            """Run in executor thread to collect chunks from generator"""
+            try:
+                generator = self.llm_provider.generate_response_stream(messages)
+                for chunk in generator:
+                    # Use thread-safe method to put items in the queue
+                    asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
+                # Signal end of stream
+                asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+            except Exception as e:
+                logger.error(f"Error in streaming response: {e}")
+                asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+
+        # Start collecting chunks in executor
+        loop.run_in_executor(None, collect_chunks_in_executor)
+
+        # Yield chunks from queue as they arrive
+        while True:
+            chunk = await queue.get()
+            if chunk is None:
+                break
+            if chunk:
+                yield chunk
+
+    async def _send_message_reply_streaming(self, message: discord.Message, stream_generator) -> Optional[discord.Message]:
+        """Send response with streaming, editing message as chunks arrive"""
+        MAX_LENGTH = 1900
+
+        try:
+            full_response = ""
+            sent_message = None
+            last_edit = 0
+            min_edit_interval = 0.5  # Minimum seconds between edits to avoid rate limiting
+
+            async for chunk in stream_generator:
+                full_response += chunk
+
+                # Edit message every few chunks or when approaching limit
+                current_time = asyncio.get_event_loop().time()
+                should_edit = (current_time - last_edit) >= min_edit_interval or len(full_response) % 500 == 0
+
+                if should_edit:
+                    # Check if we need to split into multiple messages
+                    if len(full_response) <= MAX_LENGTH:
+                        if sent_message is None:
+                            sent_message = await message.reply(full_response)
+                        else:
+                            await sent_message.edit(content=full_response)
+                        last_edit = current_time
+                    else:
+                        # Already too long, start new message
+                        break
+
+            # Final edit with complete response
+            if sent_message and len(full_response) <= MAX_LENGTH:
+                await sent_message.edit(content=full_response)
+            elif len(full_response) > MAX_LENGTH:
+                # Split into chunks
+                if sent_message is None:
+                    sent_message = await message.reply(full_response[:MAX_LENGTH])
+                else:
+                    await sent_message.edit(content=full_response[:MAX_LENGTH])
+
+                # Send remaining chunks
+                remaining = full_response[MAX_LENGTH:]
+                while remaining:
+                    chunk = remaining[:MAX_LENGTH]
+                    await message.channel.send(chunk)
+                    remaining = remaining[MAX_LENGTH:]
+
+            return sent_message
+        except Exception as e:
+            logger.error(f"Error sending streaming message reply: {e}")
+            return None
+
+    async def _send_interaction_response_streaming(self, interaction: discord.Interaction, stream_generator) -> Optional[discord.Message]:
+        """Send slash command response with streaming, editing message as chunks arrive"""
+        MAX_LENGTH = 1900
+
+        try:
+            full_response = ""
+            sent_message = None
+            last_edit = 0
+            min_edit_interval = 0.5  # Minimum seconds between edits to avoid rate limiting
+
+            async for chunk in stream_generator:
+                full_response += chunk
+
+                # Edit message every few chunks or when approaching limit
+                current_time = asyncio.get_event_loop().time()
+                should_edit = (current_time - last_edit) >= min_edit_interval or len(full_response) % 500 == 0
+
+                if should_edit:
+                    # Check if we need to split into multiple messages
+                    if len(full_response) <= MAX_LENGTH:
+                        if sent_message is None:
+                            sent_message = await interaction.followup.send(full_response)
+                        else:
+                            await sent_message.edit(content=full_response)
+                        last_edit = current_time
+                    else:
+                        # Already too long, start new message
+                        break
+
+            # Final edit with complete response
+            if sent_message and len(full_response) <= MAX_LENGTH:
+                await sent_message.edit(content=full_response)
+            elif len(full_response) > MAX_LENGTH:
+                # Split into chunks
+                if sent_message is None:
+                    sent_message = await interaction.followup.send(full_response[:MAX_LENGTH])
+                else:
+                    await sent_message.edit(content=full_response[:MAX_LENGTH])
+
+                # Send remaining chunks
+                remaining = full_response[MAX_LENGTH:]
+                while remaining:
+                    chunk = remaining[:MAX_LENGTH]
+                    await interaction.channel.send(chunk)
+                    remaining = remaining[MAX_LENGTH:]
+
+            return sent_message
+        except Exception as e:
+            logger.error(f"Error sending streaming interaction response: {e}")
+            return None
+
     def _get_uptime(self) -> str:
         if not hasattr(self, 'start_time'):
             return "Just started"

@@ -30,7 +30,12 @@ class LLMProvider(ABC):
     def generate_response(self, messages: List[Dict[str, Any]]) -> Optional[str]:
         """Generate a response from the LLM"""
         pass
-    
+
+    @abstractmethod
+    def generate_response_stream(self, messages: List[Dict[str, Any]]):
+        """Generate a response from the LLM and stream chunks"""
+        pass
+
     @staticmethod
     def strip_thinking_tags(content: str) -> str:
         """Strip reasoning/thinking content from model output"""
@@ -162,6 +167,77 @@ class OllamaProvider(LLMProvider):
         """Set the context window size in tokens"""
         self.context_tokens = tokens
 
+    def generate_response_stream(self, messages: List[Dict[str, Any]]):
+        """Generate response using Ollama chat API with streaming"""
+
+        if not self.model_name:
+            logger.error("No model name specified")
+            return
+
+        try:
+            ollama_messages = []
+
+            for msg in messages:
+                role = msg.get('role', 'user')
+                content = msg.get('content')
+
+                if isinstance(content, dict):
+                    text = content.get('text', '')
+                    images = content.get('images', [])
+
+                    message_data = {
+                        "role": role,
+                        "content": text
+                    }
+
+                    if images:
+                        image_list = []
+                        for img in images:
+                            image_data = img.get('data', '')
+                            image_list.append(image_data)
+                        message_data["images"] = image_list
+
+                    ollama_messages.append(message_data)
+                else:
+                    ollama_messages.append({
+                        "role": role,
+                        "content": content or ""
+                    })
+
+            payload = {
+                "model": self.model_name,
+                "messages": ollama_messages,
+                "stream": True
+            }
+
+            if hasattr(self, 'context_tokens'):
+                payload["options"] = {"num_ctx": self.context_tokens}
+
+            response = requests.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+                timeout=90,
+                stream=True
+            )
+
+            if response.status_code == 200:
+                for line in response.iter_lines():
+                    if line:
+                        try:
+                            data = json.loads(line)
+                            chunk = data.get('message', {}).get('content', '')
+                            if chunk:
+                                yield chunk
+                        except json.JSONDecodeError:
+                            continue
+            else:
+                logger.error(f"Ollama API error: {response.status_code} - {response.text}")
+
+        except requests.exceptions.Timeout:
+            logger.error("Request timed out - model may be too slow or not loaded")
+        except Exception as e:
+            logger.error(f"Failed to generate Ollama streaming response: {e}")
+
 
 class LMStudioProvider(LLMProvider):
     """LM Studio API provider with image and reasoning model support"""
@@ -280,6 +356,94 @@ class LMStudioProvider(LLMProvider):
             logger.error(f"Failed to generate LM Studio response: {e}")
             return None
 
+    def generate_response_stream(self, messages: List[Dict[str, Any]]):
+        """Generate response using LM Studio's OpenAI-compatible API with streaming"""
+
+        try:
+            openai_messages = []
+
+            for msg in messages:
+                role = msg.get('role', 'user')
+                content = msg.get('content')
+
+                if isinstance(content, dict):
+                    text = content.get('text', '')
+                    images = content.get('images', [])
+
+                    if images:
+                        content_parts = [{"type": "text", "text": text}]
+
+                        for img in images:
+                            image_data = img.get('data', '')
+                            mime_type = img.get('mime_type', 'image/jpeg')
+
+                            content_parts.append({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{image_data}"
+                                }
+                            })
+
+                        openai_messages.append({
+                            "role": role,
+                            "content": content_parts
+                        })
+                    else:
+                        openai_messages.append({
+                            "role": role,
+                            "content": text
+                        })
+                else:
+                    openai_messages.append({
+                        "role": role,
+                        "content": content or ""
+                    })
+
+            payload = {
+                "model": self.model_name or "local-model",
+                "messages": openai_messages,
+                "temperature": 0.7,
+                "max_tokens": 2000,
+                "stream": True
+            }
+
+            response = requests.post(
+                f"{self.base_url}/v1/chat/completions",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=90,
+                stream=True
+            )
+
+            if response.status_code == 200:
+                full_content = ""
+                for line in response.iter_lines():
+                    if line:
+                        line_str = line.decode('utf-8') if isinstance(line, bytes) else line
+                        if line_str.startswith('data:'):
+                            line_str = line_str[5:].strip()
+
+                        if not line_str:
+                            continue
+
+                        try:
+                            data = json.loads(line_str)
+                            choices = data.get('choices', [])
+                            if choices:
+                                delta = choices[0].get('delta', {})
+                                chunk = delta.get('content', '')
+                                if chunk:
+                                    yield chunk
+                        except json.JSONDecodeError:
+                            continue
+            else:
+                logger.error(f"LM Studio API error: {response.status_code} - {response.text}")
+
+        except requests.exceptions.Timeout:
+            logger.error("Request timed out - model may be too slow or not loaded")
+        except Exception as e:
+            logger.error(f"Failed to generate LM Studio streaming response: {e}")
+
 
 class TestProvider(LLMProvider):
     """Test provider for development and debugging"""
@@ -295,10 +459,10 @@ class TestProvider(LLMProvider):
     
     def generate_response(self, messages: List[Dict[str, Any]]) -> Optional[str]:
         self.counter += 1
-        
+
         last_message = messages[-1] if messages else {"content": "Hello"}
         content = last_message.get('content', '')
-        
+
         if isinstance(content, dict):
             text = content.get('text', 'No text')
             images = content.get('images', [])
@@ -306,3 +470,25 @@ class TestProvider(LLMProvider):
                 return f"Test response #{self.counter}: I see {len(images)} image(s) with text: '{text[:50]}...'"
         else:
             return f"Test response #{self.counter} to: '{str(content)[:50]}...'"
+
+    def generate_response_stream(self, messages: List[Dict[str, Any]]):
+        """Generate test response with streaming"""
+        self.counter += 1
+
+        last_message = messages[-1] if messages else {"content": "Hello"}
+        content = last_message.get('content', '')
+
+        if isinstance(content, dict):
+            text = content.get('text', 'No text')
+            images = content.get('images', [])
+            if images:
+                response_text = f"Test response #{self.counter}: I see {len(images)} image(s) with text: '{text[:50]}...'"
+            else:
+                response_text = f"Test response #{self.counter} (dict): {text[:50]}..."
+        else:
+            response_text = f"Test response #{self.counter} to: '{str(content)[:50]}...'"
+
+        # Simulate streaming by yielding words
+        words = response_text.split()
+        for i, word in enumerate(words):
+            yield word + (" " if i < len(words) - 1 else "")
