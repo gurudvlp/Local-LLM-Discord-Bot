@@ -238,12 +238,36 @@ class DiscordLLMBot:
     
     def is_owner(self, user: discord.User) -> bool:
         return user.name.lower() == self.owner_username
-    
+
+    def _resolve_system_prompt(self) -> str:
+        """Resolve system prompt, handling file:// URIs"""
+        raw_prompt = self.config.get('system_prompt', '')
+
+        if not raw_prompt.startswith('file:'):
+            return raw_prompt
+
+        # Extract file path from "file:/path/to/file" format
+        file_path = raw_prompt[5:]  # Remove "file:" prefix
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if not content:
+                    logger.warning(f"System prompt file is empty: {file_path}")
+                    return "You are a helpful AI assistant. Be friendly and concise."
+                return content
+        except FileNotFoundError:
+            logger.error(f"System prompt file not found: {file_path}")
+            return "You are a helpful AI assistant. Be friendly and concise."
+        except Exception as e:
+            logger.error(f"Error reading system prompt file {file_path}: {e}")
+            return "You are a helpful AI assistant. Be friendly and concise."
+
     def _get_conversation_manager(self, channel_id: int, is_dm: bool) -> ConversationManager:
         if channel_id not in self.conversations:
             self.conversations[channel_id] = ConversationManager(
                 max_messages=self.config.get('context_window_size', 10),
-                system_prompt=self.config.get('system_prompt'),
+                system_prompt=self._resolve_system_prompt(),
                 is_multi_user=not is_dm
             )
         return self.conversations[channel_id]
@@ -366,7 +390,7 @@ class DiscordLLMBot:
                 user_message=cached_data['user_message'],
                 assistant_response=cached_data['bot_response'],
                 rating=rating,
-                system_prompt=self.config.get('system_prompt')
+                system_prompt=self._resolve_system_prompt()
             )
             
             # Prevent memory growth
@@ -485,7 +509,7 @@ class DiscordLLMBot:
                         self.data_logger.log_chat(
                             user_message=log_content,
                             assistant_response=response,
-                            system_prompt=self.config.get('system_prompt')
+                            system_prompt=self._resolve_system_prompt()
                         )
                     
                     # Cache for RLHF
@@ -568,7 +592,7 @@ class DiscordLLMBot:
                         self.data_logger.log_chat(
                             user_message=raw_message,
                             assistant_response=response,
-                            system_prompt=self.config.get('system_prompt')
+                            system_prompt=self._resolve_system_prompt()
                         )
                 else:
                     embed = discord.Embed(
