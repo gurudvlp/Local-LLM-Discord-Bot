@@ -48,6 +48,9 @@ configs/
 !configs/README.md
 !configs/example_config.json
 
+# OAuth tokens (sensitive)
+.tokens/
+
 # Logs and Data
 chat_logs/
 chatlogs/

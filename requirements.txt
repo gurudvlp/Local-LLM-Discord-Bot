@@ -11,3 +11,7 @@ psutil>=6.1.0
 
 # For async timeout handling
 async-timeout>=5.0.1
+
+# Cloud AI Providers
+anthropic>=0.40.0  # Anthropic Claude API
+openai>=1.0.0      # OpenAI API (for Codex OAuth)

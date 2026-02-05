@@ -19,7 +19,7 @@ from pathlib import Path
 import sys
 import re
 
-from llm_providers import OllamaProvider, LMStudioProvider
+from llm_providers import OllamaProvider, LMStudioProvider, ClaudeProvider, OpenAICodexProvider, CodexOAuthManager
 from moderation import ModerationService
 from personality_manager import PersonalityManager
 
@@ -198,17 +198,39 @@ class DiscordLLMBot:
         )
         
         # Initialize LLM provider
-        if config['llm_provider'] == 'ollama':
+        provider_type = config['llm_provider']
+
+        if provider_type == 'ollama':
             self.llm_provider = OllamaProvider(
                 base_url=config['llm_base_url'],
                 model_name=config['model_name'],
                 num_threads=config.get('ollama_num_threads')
             )
-        else:
+
+        elif provider_type == 'lm_studio':
             self.llm_provider = LMStudioProvider(
                 base_url=config['llm_base_url'],
                 model_name=config['model_name']
             )
+
+        elif provider_type == 'claude':
+            self.llm_provider = ClaudeProvider(
+                api_key=config['claude_api_key'],
+                model_name=config['model_name']
+            )
+
+        elif provider_type == 'openai_codex':
+            # Load OAuth tokens from file
+            tokens = self._load_codex_tokens(config['_config_name'])
+            self.llm_provider = OpenAICodexProvider(
+                access_token=tokens.get('access_token'),
+                refresh_token=tokens.get('refresh_token'),
+                model_name=config['model_name'],
+                config_name=config['_config_name']
+            )
+
+        else:
+            raise ValueError(f"Unknown provider type: {provider_type}")
         
         # Initialize moderation if enabled
         self.moderation = None
@@ -236,6 +258,12 @@ class DiscordLLMBot:
         
         self._setup_events()
         self._setup_commands()
+
+    def _load_codex_tokens(self, config_name: str) -> Dict:
+        """Load OAuth tokens for OpenAI Codex"""
+        oauth_manager = CodexOAuthManager()
+        tokens = oauth_manager.load_tokens(config_name)
+        return tokens if tokens else {}
     
     def is_user_whitelisted(self, user: discord.User, is_dm: bool) -> bool:
         username = user.name.lower()

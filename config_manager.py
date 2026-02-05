@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Dict, Optional, Any, List
 import getpass
-from llm_providers import OllamaProvider, LMStudioProvider
+from llm_providers import OllamaProvider, LMStudioProvider, ClaudeProvider, OpenAICodexProvider, CodexOAuthManager
 from utils import Colors, clear_screen
 
 
@@ -185,12 +185,14 @@ class ConfigManager:
         print(Colors.green(f"\n✅ Creating config: '{config_name}'\n"))
         
         # Step 1: Choose LLM Provider
-        print(Colors.yellow("Step 1: Which AI software are you using?\n"))
-        print("  [1] 🦙 Ollama")
-        print("  [2] 🖥️  LM Studio\n")
-        
+        print(Colors.yellow("Step 1: Which AI provider are you using?\n"))
+        print("  [1] 🦙 Ollama (local)")
+        print("  [2] 🖥️  LM Studio (local)")
+        print("  [3] 🧠 Anthropic Claude (cloud API - pay per use)")
+        print("  [4] 🤖 OpenAI Codex (ChatGPT Plus OAuth - $20/month)\n")
+
         while True:
-            choice = input("Select (1-2): ").strip()
+            choice = input("Select (1-4): ").strip()
             if choice == "1":
                 config['llm_provider'] = "ollama"
                 config['llm_base_url'] = self.DEFAULT_OLLAMA_URL
@@ -201,56 +203,139 @@ class ConfigManager:
                 config['llm_base_url'] = self.DEFAULT_LMSTUDIO_URL
                 print(Colors.green("\n✅ Using LM Studio\n"))
                 break
+            elif choice == "3":
+                config['llm_provider'] = "claude"
+                print(Colors.green("\n✅ Using Anthropic Claude\n"))
+                break
+            elif choice == "4":
+                config['llm_provider'] = "openai_codex"
+                print(Colors.green("\n✅ Using OpenAI Codex\n"))
+                break
             else:
-                print(Colors.red("Please enter 1 or 2"))
+                print(Colors.red("Please enter 1, 2, 3, or 4"))
         
-        # Ask about custom URL
-        if config['llm_provider'] == "ollama":
-            print(Colors.cyan("📍 Finding Ollama's server URL:"))
-            print(Colors.cyan("   - Run 'ollama serve' in a terminal"))
-            print(Colors.cyan("   - Look for 'Ollama is running on ...' message"))
-            print(Colors.cyan("   - Copy the full URL shown (e.g., http://localhost:11434)\n"))
+        # Handle local providers (Ollama, LM Studio)
+        if config['llm_provider'] in ['ollama', 'lm_studio']:
+            # Ask about custom URL
+            if config['llm_provider'] == "ollama":
+                print(Colors.cyan("📍 Finding Ollama's server URL:"))
+                print(Colors.cyan("   - Run 'ollama serve' in a terminal"))
+                print(Colors.cyan("   - Look for 'Ollama is running on ...' message"))
+                print(Colors.cyan("   - Copy the full URL shown (e.g., http://localhost:11434)\n"))
+            else:
+                print(Colors.cyan("📍 Finding LM Studio's server URL:"))
+                print(Colors.cyan("   - Open LM Studio → Developer tab"))
+                print(Colors.cyan("   - Look at the server URL shown"))
+                print(Colors.cyan("   - Copy the exact URL (e.g., http://localhost:1234)\n"))
+
+            custom_url = input("Enter the URL you see (or press Enter for default): ").strip()
+            if custom_url:
+                config['llm_base_url'] = custom_url if custom_url.startswith('http') else f"http://{custom_url}"
+            else:
+                print(Colors.yellow(f"Using default URL: {config['llm_base_url']}"))
+        
+        # Step 2: Authentication and Connection
+        print(Colors.yellow("\nStep 2: Authentication and Connection\n"))
+
+        # Handle Claude API key
+        if config['llm_provider'] == "claude":
+            print("Get your Claude API key from: https://console.anthropic.com/settings/keys")
+            print(Colors.cyan("(Your input will be hidden for security)\n"))
+
+            while True:
+                api_key = getpass.getpass("Anthropic API Key: ").strip()
+                if api_key:
+                    config['claude_api_key'] = api_key
+                    break
+                print(Colors.red("API key cannot be empty"))
+
+            print("\n🔍 Testing connection to Claude API...")
+            provider = ClaudeProvider(api_key=api_key)
+
+        # Handle OpenAI Codex OAuth
+        elif config['llm_provider'] == "openai_codex":
+            print(Colors.cyan("OpenAI Codex requires a ChatGPT Plus subscription ($20/month)"))
+            print(Colors.cyan("This provides 30-150 messages per 5 hours.\n"))
+
+            proceed = input("Do you have ChatGPT Plus? (y/n): ").strip().lower()
+            if proceed != 'y':
+                print(Colors.yellow("\n⚠️  ChatGPT Plus is required for OpenAI Codex OAuth"))
+                print("Get ChatGPT Plus at: https://chat.openai.com/")
+                return None
+
+            oauth_manager = CodexOAuthManager()
+            tokens = oauth_manager.start_oauth_flow()
+
+            if not tokens:
+                print(Colors.red("\n❌ OAuth flow failed"))
+                return None
+
+            # Save tokens
+            oauth_manager.save_tokens(tokens, config_name)
+            config['openai_codex_oauth'] = True
+
+            print("\n🔍 Testing connection to OpenAI Codex...")
+            provider = OpenAICodexProvider(
+                access_token=tokens.get('access_token'),
+                refresh_token=tokens.get('refresh_token'),
+                config_name=config_name
+            )
+
+        # Handle local providers (Ollama, LM Studio)
         else:
-            print(Colors.cyan("📍 Finding LM Studio's server URL:"))
-            print(Colors.cyan("   - Open LM Studio → Developer tab"))
-            print(Colors.cyan("   - Look at the server URL shown"))
-            print(Colors.cyan("   - Copy the exact URL (e.g., http://localhost:1234)\n"))
-        
-        custom_url = input("Enter the URL you see (or press Enter for default): ").strip()
-        if custom_url:
-            config['llm_base_url'] = custom_url if custom_url.startswith('http') else f"http://{custom_url}"
-        else:
-            print(Colors.yellow(f"Using default URL: {config['llm_base_url']}"))
-        
-        # Step 2: Test Connection and Get Models
-        print(Colors.yellow("\nStep 2: Connecting to your AI...\n"))
-        
-        provider_name = "Ollama" if config['llm_provider'] == "ollama" else "LM Studio"
-        
-        if config['llm_provider'] == "ollama":
-            provider = OllamaProvider(config['llm_base_url'])
-        else:
-            provider = LMStudioProvider(config['llm_base_url'])
-        
-        print(f"🔍 Connecting to {provider_name}...")
+            provider_name = "Ollama" if config['llm_provider'] == "ollama" else "LM Studio"
+
+            if config['llm_provider'] == "ollama":
+                provider = OllamaProvider(config['llm_base_url'])
+            else:
+                provider = LMStudioProvider(config['llm_base_url'])
+
+            print(f"🔍 Connecting to {provider_name}...")
         
         if not provider.test_connection():
-            print(Colors.red(f"\n❌ Can't connect to {provider_name} at {config['llm_base_url']}"))
-            
-            if config['llm_provider'] == "ollama":
-                print("\nMake sure Ollama is running:")
-                print(Colors.cyan("  1. Open a new terminal"))
-                print(Colors.cyan("  2. Run: ollama serve"))
-                print(Colors.cyan("  3. Try setup again\n"))
+            # Provider-specific error messages
+            if config['llm_provider'] == "claude":
+                print(Colors.red("\n❌ Failed to connect to Claude API"))
+                print("\nPossible issues:")
+                print(Colors.cyan("  • Invalid API key"))
+                print(Colors.cyan("  • No internet connection"))
+                print(Colors.cyan("  • API service is down"))
+                return None
+
+            elif config['llm_provider'] == "openai_codex":
+                print(Colors.red("\n❌ Failed to connect to OpenAI Codex"))
+                print("\nPossible issues:")
+                print(Colors.cyan("  • Invalid or expired tokens"))
+                print(Colors.cyan("  • No internet connection"))
+                print(Colors.cyan("  • ChatGPT Plus subscription required"))
+                return None
+
             else:
-                print("\nMake sure LM Studio server is running:")
-                print(Colors.cyan("  1. Open LM Studio"))
-                print(Colors.cyan("  2. Go to Developer tab"))
-                print(Colors.cyan("  3. Start the server"))
-                print(Colors.cyan("  4. Try setup again\n"))
-            return None
-        
-        print(Colors.green(f"✅ Connected to {provider_name}!\n"))
+                # Local providers
+                provider_name = "Ollama" if config['llm_provider'] == "ollama" else "LM Studio"
+                print(Colors.red(f"\n❌ Can't connect to {provider_name} at {config['llm_base_url']}"))
+
+                if config['llm_provider'] == "ollama":
+                    print("\nMake sure Ollama is running:")
+                    print(Colors.cyan("  1. Open a new terminal"))
+                    print(Colors.cyan("  2. Run: ollama serve"))
+                    print(Colors.cyan("  3. Try setup again\n"))
+                else:
+                    print("\nMake sure LM Studio server is running:")
+                    print(Colors.cyan("  1. Open LM Studio"))
+                    print(Colors.cyan("  2. Go to Developer tab"))
+                    print(Colors.cyan("  3. Start the server"))
+                    print(Colors.cyan("  4. Try setup again\n"))
+                return None
+
+        # Success message
+        if config['llm_provider'] == "claude":
+            print(Colors.green("✅ Connected to Claude API!\n"))
+        elif config['llm_provider'] == "openai_codex":
+            print(Colors.green("✅ Connected to OpenAI Codex!\n"))
+        else:
+            provider_name = "Ollama" if config['llm_provider'] == "ollama" else "LM Studio"
+            print(Colors.green(f"✅ Connected to {provider_name}!\n"))
         
         print(f"📚 Getting available models...")
         models = provider.list_models()
