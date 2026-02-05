@@ -588,8 +588,14 @@ class DiscordLLMBot:
 
                 personalities = self.personality_manager.get_personalities(message.channel.id)
                 llm_messages = conv_manager.get_messages_for_llm(user_message, username, personalities)
-                stream_generator = self._generate_response_stream(llm_messages)
-                sent_message = await self._send_message_reply_streaming(message, stream_generator)
+
+                # Use streaming or non-streaming based on config
+                if self.config.get('enable_streaming', True):
+                    stream_generator = self._generate_response_stream(llm_messages)
+                    sent_message = await self._send_message_reply_streaming(message, stream_generator)
+                else:
+                    response_text = await self._generate_response(llm_messages)
+                    sent_message = await self._send_message_reply(message, response_text) if response_text else None
 
                 # Collect full response for logging and processing
                 response = ""
@@ -684,8 +690,14 @@ class DiscordLLMBot:
                 username = interaction.user.display_name if not is_dm else None
                 personalities = self.personality_manager.get_personalities(interaction.channel_id)
                 llm_messages = conv_manager.get_messages_for_llm(message, username, personalities)
-                stream_generator = self._generate_response_stream(llm_messages)
-                sent_message = await self._send_interaction_response_streaming(interaction, stream_generator)
+
+                # Use streaming or non-streaming based on config
+                if self.config.get('enable_streaming', True):
+                    stream_generator = self._generate_response_stream(llm_messages)
+                    sent_message = await self._send_interaction_response_streaming(interaction, stream_generator)
+                else:
+                    response_text = await self._generate_response(llm_messages)
+                    sent_message = await self._send_interaction_response(interaction, response_text) if response_text else None
 
                 # Collect full response for logging and processing
                 response = ""

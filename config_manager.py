@@ -657,6 +657,35 @@ class ConfigManager:
         else:
             print("(LM Studio provider - thread count managed automatically)\n")
 
+        # Step 12: Streaming Toggle
+        print(Colors.yellow("Step 12: Response Streaming\n"))
+        print("Should responses stream in real-time as they're generated?")
+        print(Colors.cyan("• Streaming: Shows text as it's generated (good for slow local LLMs)"))
+        print(Colors.cyan("• Non-streaming: Waits for complete response (good for fast cloud APIs)\n"))
+
+        # Default recommendation based on provider
+        if config['llm_provider'] in ['claude', 'openai_api', 'openai_codex']:
+            print(Colors.cyan("Recommended: No (cloud APIs are fast)\n"))
+            default_streaming = False
+        else:
+            print(Colors.cyan("Recommended: Yes (local LLMs benefit from streaming)\n"))
+            default_streaming = True
+
+        streaming_choice = input("Enable streaming? (y/n): ").strip().lower()
+        if streaming_choice == 'y':
+            config['enable_streaming'] = True
+            print(Colors.green("\n✅ Streaming enabled - responses will appear as they're generated\n"))
+        elif streaming_choice == 'n':
+            config['enable_streaming'] = False
+            print(Colors.green("\n✅ Streaming disabled - full responses will appear at once\n"))
+        else:
+            # Use default based on provider
+            config['enable_streaming'] = default_streaming
+            if default_streaming:
+                print(Colors.yellow("\n⏭️  Using default: Streaming enabled\n"))
+            else:
+                print(Colors.yellow("\n⏭️  Using default: Streaming disabled\n"))
+
         if config.get('chat_logging_enabled') or config.get('rlhf_logging_enabled'):
             print(Colors.cyan("\n📊 Data Collection Active:"))
             if config.get('chat_logging_enabled'):
