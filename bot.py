@@ -19,7 +19,7 @@ from pathlib import Path
 import sys
 import re
 
-from llm_providers import OllamaProvider, LMStudioProvider, ClaudeProvider, OpenAICodexProvider, CodexOAuthManager
+from llm_providers import OllamaProvider, LMStudioProvider, ClaudeProvider, OpenAICodexProvider, OpenAIAPIProvider, CodexOAuthManager
 from moderation import ModerationService
 from personality_manager import PersonalityManager
 
@@ -227,6 +227,12 @@ class DiscordLLMBot:
                 refresh_token=tokens.get('refresh_token'),
                 model_name=config['model_name'],
                 config_name=config['_config_name']
+            )
+
+        elif provider_type == 'openai_api':
+            self.llm_provider = OpenAIAPIProvider(
+                api_key=config['openai_api_key'],
+                model_name=config['model_name']
             )
 
         else:

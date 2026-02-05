@@ -1111,3 +1111,163 @@ class OpenAICodexProvider(LLMProvider):
 
         except Exception as e:
             logger.error(f"Unexpected error in OpenAI streaming: {e}")
+
+
+class OpenAIAPIProvider(LLMProvider):
+    """OpenAI API provider with direct API key authentication"""
+
+    PREDEFINED_MODELS = [
+        "gpt-4o",
+        "gpt-4-turbo",
+        "gpt-3.5-turbo",
+        "o1",
+        "o1-mini"
+    ]
+
+    def __init__(self, api_key: str, model_name: str = "gpt-4o"):
+        self.api_key = api_key
+        self.model_name = model_name
+
+        try:
+            import openai
+            self.openai = openai
+            self.client = openai.OpenAI(api_key=api_key)
+        except ImportError:
+            logger.error("openai package not installed. Run: pip install openai>=1.0.0")
+            raise ImportError("openai package not installed")
+
+    def test_connection(self) -> bool:
+        """Test API connection with minimal request"""
+        try:
+            if not self.client:
+                return False
+
+            # Make a minimal API call
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": "Hi"}],
+                max_tokens=5
+            )
+            return True
+        except self.openai.AuthenticationError:
+            logger.error("OpenAI authentication failed - invalid API key")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to connect to OpenAI API: {e}")
+            return False
+
+    def list_models(self) -> List[str]:
+        """Return predefined list of OpenAI models"""
+        return self.PREDEFINED_MODELS
+
+    def _convert_messages_to_openai_format(self, messages: List[Dict[str, Any]]) -> List[Dict]:
+        """
+        Convert bot's internal message format to OpenAI's API format.
+        Supports text and multimodal (text + images) messages.
+        """
+        openai_messages = []
+
+        for msg in messages:
+            role = msg.get('role', 'user')
+            content = msg.get('content')
+
+            if isinstance(content, dict):
+                text = content.get('text', '')
+                images = content.get('images', [])
+
+                if images:
+                    # Multimodal content
+                    content_parts = [{"type": "text", "text": text}]
+
+                    for img in images:
+                        image_data = img.get('data', '')
+                        mime_type = img.get('mime_type', 'image/jpeg')
+
+                        content_parts.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{image_data}"
+                            }
+                        })
+
+                    openai_messages.append({
+                        "role": role,
+                        "content": content_parts
+                    })
+                else:
+                    # Text only
+                    openai_messages.append({
+                        "role": role,
+                        "content": text
+                    })
+            else:
+                # Simple text message
+                openai_messages.append({
+                    "role": role,
+                    "content": content or ""
+                })
+
+        return openai_messages
+
+    def generate_response(self, messages: List[Dict[str, Any]]) -> Optional[str]:
+        """Generate response using OpenAI API"""
+        try:
+            openai_messages = self._convert_messages_to_openai_format(messages)
+
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=openai_messages,
+                max_tokens=2000
+            )
+
+            if response.choices:
+                return response.choices[0].message.content
+
+            return None
+
+        except self.openai.RateLimitError as e:
+            logger.error(f"OpenAI rate limit: {e}")
+            return "⏳ API rate limit reached. Please try again in a moment."
+
+        except self.openai.AuthenticationError as e:
+            logger.error(f"OpenAI authentication failed: {e}")
+            return "❌ API authentication failed. Please check your API key."
+
+        except self.openai.APIError as e:
+            logger.error(f"OpenAI API error: {e}")
+            return f"❌ API error occurred: {str(e)}"
+
+        except Exception as e:
+            logger.error(f"Unexpected error in OpenAI provider: {e}")
+            return None
+
+    def generate_response_stream(self, messages: List[Dict[str, Any]]):
+        """Generate response using OpenAI API with streaming"""
+        try:
+            openai_messages = self._convert_messages_to_openai_format(messages)
+
+            stream = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=openai_messages,
+                max_tokens=2000,
+                stream=True
+            )
+
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+
+        except self.openai.RateLimitError as e:
+            logger.error(f"OpenAI rate limit: {e}")
+            yield "⏳ API rate limit reached. Please try again in a moment."
+
+        except self.openai.AuthenticationError as e:
+            logger.error(f"OpenAI authentication failed: {e}")
+            yield "❌ API authentication failed. Please check your API key."
+
+        except self.openai.APIError as e:
+            logger.error(f"OpenAI API error: {e}")
+            yield f"❌ API error occurred: {str(e)}"
+
+        except Exception as e:
+            logger.error(f"Unexpected error in OpenAI streaming: {e}")

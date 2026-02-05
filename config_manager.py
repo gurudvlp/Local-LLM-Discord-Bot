@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Dict, Optional, Any, List
 import getpass
-from llm_providers import OllamaProvider, LMStudioProvider, ClaudeProvider, OpenAICodexProvider, CodexOAuthManager
+from llm_providers import OllamaProvider, LMStudioProvider, ClaudeProvider, OpenAICodexProvider, OpenAIAPIProvider, CodexOAuthManager
 from utils import Colors, clear_screen
 
 
@@ -189,10 +189,11 @@ class ConfigManager:
         print("  [1] 🦙 Ollama (local)")
         print("  [2] 🖥️  LM Studio (local)")
         print("  [3] 🧠 Anthropic Claude (cloud API - pay per use)")
-        print("  [4] 🤖 OpenAI Codex (ChatGPT Plus OAuth - $20/month)\n")
+        print("  [4] 🤖 OpenAI Codex (ChatGPT Plus OAuth - $20/month)")
+        print("  [5] 🔑 OpenAI API (cloud API - pay per use)\n")
 
         while True:
-            choice = input("Select (1-4): ").strip()
+            choice = input("Select (1-5): ").strip()
             if choice == "1":
                 config['llm_provider'] = "ollama"
                 config['llm_base_url'] = self.DEFAULT_OLLAMA_URL
@@ -211,8 +212,12 @@ class ConfigManager:
                 config['llm_provider'] = "openai_codex"
                 print(Colors.green("\n✅ Using OpenAI Codex\n"))
                 break
+            elif choice == "5":
+                config['llm_provider'] = "openai_api"
+                print(Colors.green("\n✅ Using OpenAI API\n"))
+                break
             else:
-                print(Colors.red("Please enter 1, 2, 3, or 4"))
+                print(Colors.red("Please enter 1, 2, 3, 4, or 5"))
         
         # Handle local providers (Ollama, LM Studio)
         if config['llm_provider'] in ['ollama', 'lm_studio']:
@@ -281,6 +286,21 @@ class ConfigManager:
                 config_name=config_name
             )
 
+        # Handle OpenAI API key
+        elif config['llm_provider'] == "openai_api":
+            print("Get your OpenAI API key from: https://platform.openai.com/api-keys")
+            print(Colors.cyan("(Your input will be hidden for security)\n"))
+
+            while True:
+                api_key = getpass.getpass("OpenAI API Key: ").strip()
+                if api_key:
+                    config['openai_api_key'] = api_key
+                    break
+                print(Colors.red("API key cannot be empty"))
+
+            print("\n🔍 Testing connection to OpenAI API...")
+            provider = OpenAIAPIProvider(api_key=api_key)
+
         # Handle local providers (Ollama, LM Studio)
         else:
             provider_name = "Ollama" if config['llm_provider'] == "ollama" else "LM Studio"
@@ -310,6 +330,15 @@ class ConfigManager:
                 print(Colors.cyan("  • ChatGPT Plus subscription required"))
                 return None
 
+            elif config['llm_provider'] == "openai_api":
+                print(Colors.red("\n❌ Failed to connect to OpenAI API"))
+                print("\nPossible issues:")
+                print(Colors.cyan("  • Invalid API key"))
+                print(Colors.cyan("  • No internet connection"))
+                print(Colors.cyan("  • API service is down"))
+                print(Colors.cyan("  • Insufficient credits or rate limited"))
+                return None
+
             else:
                 # Local providers
                 provider_name = "Ollama" if config['llm_provider'] == "ollama" else "LM Studio"
@@ -333,6 +362,8 @@ class ConfigManager:
             print(Colors.green("✅ Connected to Claude API!\n"))
         elif config['llm_provider'] == "openai_codex":
             print(Colors.green("✅ Connected to OpenAI Codex!\n"))
+        elif config['llm_provider'] == "openai_api":
+            print(Colors.green("✅ Connected to OpenAI API!\n"))
         else:
             provider_name = "Ollama" if config['llm_provider'] == "ollama" else "LM Studio"
             print(Colors.green(f"✅ Connected to {provider_name}!\n"))
