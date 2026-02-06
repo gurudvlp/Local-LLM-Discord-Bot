@@ -149,6 +149,9 @@ class ConversationManager:
 
         if self.is_multi_user:
             system_content += "\n\nYou are in a group chat with multiple users. Each user message will show [username]: before their message to identify who is speaking. You should respond without using a [botname]: prefix or any similar prefix for your own responses."
+        elif username:
+            # In single-user mode (DMs), inform the LLM of the user's name
+            system_content += f"\n\nYou are chatting with a user named {username}."
 
         messages.append({"role": "system", "content": system_content})
         
@@ -576,7 +579,7 @@ class DiscordLLMBot:
                         return
                 
                 conv_manager = self._get_conversation_manager(message.channel.id, is_dm)
-                username = message.author.display_name if not is_dm else None
+                username = message.author.display_name  # Always capture username, even in DMs
 
                 if images:
                     user_message = {
@@ -687,7 +690,7 @@ class DiscordLLMBot:
                         return
                 
                 conv_manager = self._get_conversation_manager(interaction.channel_id, is_dm)
-                username = interaction.user.display_name if not is_dm else None
+                username = interaction.user.display_name  # Always capture username, even in DMs
                 personalities = self.personality_manager.get_personalities(interaction.channel_id)
                 llm_messages = conv_manager.get_messages_for_llm(message, username, personalities)
 
