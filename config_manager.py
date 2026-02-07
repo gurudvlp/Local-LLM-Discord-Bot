@@ -686,6 +686,49 @@ class ConfigManager:
             else:
                 print(Colors.yellow("\n⏭️  Using default: Streaming disabled\n"))
 
+        # Step 13: Artificial Response Delay
+        print(Colors.yellow("Step 13: Artificial Response Delay (Optional)\n"))
+        print("Add artificial delay before responding to simulate slower hardware?")
+        print(Colors.cyan("• Useful for making a fast bot appear slower"))
+        print(Colors.cyan("• Bot will show 'typing...' indicator during delay"))
+        print(Colors.cyan("• Delay is randomized between min and max values\n"))
+
+        delay_choice = input("Enable artificial delay? (y/n): ").strip().lower()
+        if delay_choice == 'y':
+            print(Colors.cyan("\nEnter delay range in seconds (e.g., 10-30 or 30-90):"))
+
+            while True:
+                try:
+                    min_delay = input("Minimum delay (seconds): ").strip()
+                    if not min_delay:
+                        config['response_delay_min'] = 0
+                        config['response_delay_max'] = 0
+                        print(Colors.yellow("⏭️  Skipping delay configuration\n"))
+                        break
+
+                    min_delay = float(min_delay)
+                    if min_delay < 0:
+                        print(Colors.red("Minimum delay cannot be negative"))
+                        continue
+
+                    max_delay = input("Maximum delay (seconds): ").strip()
+                    max_delay = float(max_delay)
+
+                    if max_delay < min_delay:
+                        print(Colors.red("Maximum delay must be >= minimum delay"))
+                        continue
+
+                    config['response_delay_min'] = min_delay
+                    config['response_delay_max'] = max_delay
+                    print(Colors.green(f"\n✅ Delay enabled: {min_delay}-{max_delay} seconds\n"))
+                    break
+                except ValueError:
+                    print(Colors.red("Please enter valid numbers"))
+        else:
+            config['response_delay_min'] = 0
+            config['response_delay_max'] = 0
+            print(Colors.green("\n✅ No artificial delay - bot will respond immediately\n"))
+
         if config.get('chat_logging_enabled') or config.get('rlhf_logging_enabled'):
             print(Colors.cyan("\n📊 Data Collection Active:"))
             if config.get('chat_logging_enabled'):

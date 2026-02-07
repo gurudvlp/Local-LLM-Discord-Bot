@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 import sys
 import re
+import random
 
 from llm_providers import OllamaProvider, LMStudioProvider, ClaudeProvider, OpenAICodexProvider, OpenAIAPIProvider, CodexOAuthManager
 from moderation import ModerationService
@@ -432,7 +433,13 @@ class DiscordLLMBot:
             
             if self.config.get('moderation_enabled'):
                 print(f'\n🛡️  Moderation is ENABLED - scanning messages for inappropriate content')
-            
+
+            # Show response delay if configured
+            min_delay = self.config.get('response_delay_min', 0)
+            max_delay = self.config.get('response_delay_max', 0)
+            if min_delay > 0 or max_delay > 0:
+                print(f'\n⏱️  Artificial Delay: {min_delay}-{max_delay} seconds (simulating slower hardware)')
+
             if self.config.get('chat_logging_enabled') or self.config.get('rlhf_logging_enabled'):
                 print(f'\n📊 Data Collection:')
                 if self.config.get('chat_logging_enabled'):
@@ -592,6 +599,9 @@ class DiscordLLMBot:
                 personalities = self.personality_manager.get_personalities(message.channel.id)
                 llm_messages = conv_manager.get_messages_for_llm(user_message, username, personalities)
 
+                # Apply artificial delay if configured
+                await self._apply_response_delay()
+
                 # Use streaming or non-streaming based on config
                 if self.config.get('enable_streaming', True):
                     stream_generator = self._generate_response_stream(llm_messages)
@@ -693,6 +703,9 @@ class DiscordLLMBot:
                 username = interaction.user.display_name  # Always capture username, even in DMs
                 personalities = self.personality_manager.get_personalities(interaction.channel_id)
                 llm_messages = conv_manager.get_messages_for_llm(message, username, personalities)
+
+                # Apply artificial delay if configured
+                await self._apply_response_delay()
 
                 # Use streaming or non-streaming based on config
                 if self.config.get('enable_streaming', True):
@@ -809,7 +822,13 @@ class DiscordLLMBot:
             embed.add_field(name="Mode", value=mode, inline=True)
             embed.add_field(name="Your Access", value=access_status, inline=True)
             embed.add_field(name="Context Window", value=f"{self.config.get('context_window_size', 10)} messages", inline=True)
-            
+
+            # Show response delay if configured
+            min_delay = self.config.get('response_delay_min', 0)
+            max_delay = self.config.get('response_delay_max', 0)
+            if min_delay > 0 or max_delay > 0:
+                embed.add_field(name="Response Delay", value=f"{min_delay}-{max_delay}s", inline=True)
+
             if is_owner:
                 data_status = []
                 if self.config.get('chat_logging_enabled'):
@@ -1215,7 +1234,17 @@ class DiscordLLMBot:
             return f"{minutes}m {seconds}s"
         else:
             return f"{seconds}s"
-    
+
+    async def _apply_response_delay(self):
+        """Apply artificial delay before responding if configured"""
+        min_delay = self.config.get('response_delay_min', 0)
+        max_delay = self.config.get('response_delay_max', 0)
+
+        if min_delay > 0 or max_delay > 0:
+            delay = random.uniform(min_delay, max_delay)
+            logger.info(f"Applying artificial delay: {delay:.1f} seconds")
+            await asyncio.sleep(delay)
+
     async def start(self):
         """Start the Discord bot"""
         self.start_time = datetime.now()
