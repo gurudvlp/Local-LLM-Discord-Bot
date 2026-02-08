@@ -7,7 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
-from typing import Dict, List, Optional, Any, Deque
+from typing import Dict, List, Optional, Any, Deque, Literal
 from datetime import datetime
 import logging
 from collections import defaultdict, deque
@@ -265,7 +265,8 @@ class DiscordLLMBot:
         self.conversations: Dict[int, ConversationManager] = {}
         self.processing: set = set()
         self.message_cache: Dict[int, Dict[str, Any]] = {}
-        
+        self.channel_context_sizes: Dict[str, int] = {}  # "guildid_channelid" -> size
+
         self._setup_events()
         self._setup_commands()
 
@@ -358,10 +359,14 @@ class DiscordLLMBot:
             logger.error(f"Error reading system prompt file {file_path}: {e}")
             return "You are a helpful AI assistant. Be friendly and concise."
 
-    def _get_conversation_manager(self, channel_id: int, is_dm: bool) -> ConversationManager:
+    def _get_conversation_manager(self, channel_id: int, is_dm: bool, guild_id: Optional[int] = None) -> ConversationManager:
         if channel_id not in self.conversations:
+            # Check for per-channel context size
+            channel_key = f"{guild_id if guild_id else 'dm'}_{channel_id}"
+            context_size = self.channel_context_sizes.get(channel_key, self.config.get('context_window_size', 10))
+
             self.conversations[channel_id] = ConversationManager(
-                max_messages=self.config.get('context_window_size', 10),
+                max_messages=context_size,
                 system_prompt=self._resolve_system_prompt(),
                 is_multi_user=not is_dm
             )
@@ -585,7 +590,10 @@ class DiscordLLMBot:
                         await message.reply("⚠️ Your message was flagged by the content filter. Please keep the conversation appropriate.")
                         return
                 
-                conv_manager = self._get_conversation_manager(message.channel.id, is_dm)
+                # Get guild_id early since we need it for both conv manager and personalities
+                guild_id = message.guild.id if message.guild else None
+
+                conv_manager = self._get_conversation_manager(message.channel.id, is_dm, guild_id)
                 username = message.author.display_name  # Always capture username, even in DMs
 
                 if images:
@@ -596,7 +604,9 @@ class DiscordLLMBot:
                 else:
                     user_message = content
 
-                personalities = self.personality_manager.get_personalities(message.channel.id)
+                # Get personalities with bot-specific key
+                bot_id = self.bot.user.id
+                personalities = self.personality_manager.get_personalities(bot_id, guild_id, message.channel.id)
                 llm_messages = conv_manager.get_messages_for_llm(user_message, username, personalities)
 
                 # Apply artificial delay if configured
@@ -699,9 +709,14 @@ class DiscordLLMBot:
                         await interaction.followup.send(embed=embed, ephemeral=True)
                         return
                 
-                conv_manager = self._get_conversation_manager(interaction.channel_id, is_dm)
+                # Get guild_id early since we need it for both conv manager and personalities
+                guild_id = interaction.guild.id if interaction.guild else None
+
+                conv_manager = self._get_conversation_manager(interaction.channel_id, is_dm, guild_id)
                 username = interaction.user.display_name  # Always capture username, even in DMs
-                personalities = self.personality_manager.get_personalities(interaction.channel_id)
+                # Get personalities with bot-specific key
+                bot_id = self.bot.user.id
+                personalities = self.personality_manager.get_personalities(bot_id, guild_id, interaction.channel_id)
                 llm_messages = conv_manager.get_messages_for_llm(message, username, personalities)
 
                 # Apply artificial delay if configured
@@ -964,74 +979,271 @@ class DiscordLLMBot:
             
             await interaction.response.send_message(embed=embed)
 
-        # Prefix Commands for Personality Management
-        @self.bot.command(name="personality")
-        async def personality_command(ctx: commands.Context, *args):
-            """
-            Manage personality instructions for the channel.
-            Usage:
-              !personality <slot> <text> - Set a personality
-              !personality clear <slot> - Clear a slot
-              !personality clearall - Clear all personalities
-              !personality list - List all personalities
-            """
-            is_dm = isinstance(ctx.channel, discord.DMChannel)
-            if not self.is_user_whitelisted(ctx.author, is_dm):
-                await ctx.send("❌ You are not whitelisted to use this bot.")
+        # Slash command for personality management (local channel)
+        @self.bot.tree.command(name="personality", description="Manage bot personality for this channel")
+        @app_commands.describe(
+            action="Action to perform",
+            slot="Personality slot (0-4)",
+            text="Personality text (for 'set' action)"
+        )
+        async def personality_command(
+            interaction: discord.Interaction,
+            action: Literal["set", "clear", "clearall", "list"],
+            slot: Optional[int] = None,
+            text: Optional[str] = None
+        ):
+            is_dm = isinstance(interaction.channel, discord.DMChannel)
+            if not self.is_user_whitelisted(interaction.user, is_dm):
+                await interaction.response.send_message("❌ You are not whitelisted to use this bot.", ephemeral=True)
                 return
 
-            channel_id = ctx.channel.id
+            bot_id = self.bot.user.id
+            guild_id = interaction.guild.id if interaction.guild else None
+            channel_id = interaction.channel_id
 
-            # Handle subcommands
-            if not args:
-                await ctx.send("❌ Usage: `!personality <slot> <text>` | `!personality clear <slot>` | `!personality clearall` | `!personality list`")
-                return
-
-            first_arg = args[0].lower()
-
-            # List personalities
-            if first_arg == "list":
-                personalities_str = self.personality_manager.list_personalities(channel_id)
+            if action == "list":
+                personalities_str = self.personality_manager.list_personalities(bot_id, guild_id, channel_id)
                 embed = discord.Embed(
                     title="📋 Current Personalities",
                     description=personalities_str,
                     color=discord.Color.blue()
                 )
-                await ctx.send(embed=embed)
+                await interaction.response.send_message(embed=embed)
                 return
 
-            # Clear all personalities
-            if first_arg == "clearall":
-                success, message = self.personality_manager.clear_all_personalities(channel_id)
-                await ctx.send(message)
+            elif action == "clearall":
+                success, message = self.personality_manager.clear_all_personalities(bot_id, guild_id, channel_id)
+                await interaction.response.send_message(message, ephemeral=True)
                 return
 
-            # Clear a specific personality
-            if first_arg == "clear":
-                if len(args) < 2:
-                    await ctx.send("❌ Usage: `!personality clear <slot>`")
+            elif action == "clear":
+                if slot is None:
+                    await interaction.response.send_message("❌ Please specify a slot number (0-4)", ephemeral=True)
                     return
-                try:
-                    slot_num = int(args[1])
-                    success, message = self.personality_manager.clear_personality(channel_id, slot_num)
-                    await ctx.send(message)
-                except ValueError:
-                    await ctx.send(f"❌ Slot must be a number (0-{PersonalityManager.MAX_SLOTS - 1})")
+                success, message = self.personality_manager.clear_personality(bot_id, guild_id, channel_id, slot)
+                await interaction.response.send_message(message, ephemeral=True)
                 return
 
-            # Set a personality (slot and text)
-            if len(args) < 2:
-                await ctx.send("❌ Usage: `!personality <slot> <text>`")
+            elif action == "set":
+                if slot is None or text is None:
+                    await interaction.response.send_message("❌ Please specify both slot and text", ephemeral=True)
+                    return
+                success, message = self.personality_manager.set_personality(bot_id, guild_id, channel_id, slot, text)
+                await interaction.response.send_message(message, ephemeral=True)
+                return
+
+        # Remote configuration command group (DM-based, owner-only)
+        config_group = app_commands.Group(name="config", description="Remote bot configuration (owner only)")
+
+        @config_group.command(name="listservers", description="List all servers the bot is in")
+        async def config_listservers(interaction: discord.Interaction):
+            if not self.is_owner(interaction.user):
+                await interaction.response.send_message("❌ Owner only", ephemeral=True)
+                return
+
+            servers = []
+            for guild in self.bot.guilds:
+                servers.append(f"**{guild.name}** (ID: `{guild.id}`)")
+
+            if not servers:
+                description = "Not in any servers"
+            else:
+                description = "\n".join(servers)
+
+            embed = discord.Embed(
+                title="🌐 Servers",
+                description=description,
+                color=discord.Color.blue()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        @config_group.command(name="listchannels", description="List channels in a server")
+        @app_commands.describe(guild_id="Server ID")
+        async def config_listchannels(interaction: discord.Interaction, guild_id: str):
+            if not self.is_owner(interaction.user):
+                await interaction.response.send_message("❌ Owner only", ephemeral=True)
                 return
 
             try:
-                slot_num = int(first_arg)
-                text = " ".join(args[1:])
-                success, message = self.personality_manager.set_personality(channel_id, slot_num, text)
-                await ctx.send(message)
+                guild = self.bot.get_guild(int(guild_id))
+                if not guild:
+                    await interaction.response.send_message(f"❌ Server not found", ephemeral=True)
+                    return
+
+                channels = []
+                for channel in guild.text_channels:
+                    channels.append(f"**#{channel.name}** (ID: `{channel.id}`)")
+
+                if not channels:
+                    description = "No text channels"
+                else:
+                    description = "\n".join(channels)
+
+                embed = discord.Embed(
+                    title=f"📝 Channels in {guild.name}",
+                    description=description,
+                    color=discord.Color.blue()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
             except ValueError:
-                await ctx.send(f"❌ Slot must be a number (0-{PersonalityManager.MAX_SLOTS - 1})")
-            return
+                await interaction.response.send_message("❌ Invalid guild ID", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
+        @config_group.command(name="send", description="Send a message to a specific channel")
+        @app_commands.describe(
+            channel_id="Channel ID to send to",
+            message="Message to send"
+        )
+        async def config_send(interaction: discord.Interaction, channel_id: str, message: str):
+            if not self.is_owner(interaction.user):
+                await interaction.response.send_message("❌ Owner only", ephemeral=True)
+                return
+
+            try:
+                channel = self.bot.get_channel(int(channel_id))
+                if channel:
+                    await channel.send(message)
+                    await interaction.response.send_message(f"✅ Sent to <#{channel_id}>", ephemeral=True)
+                else:
+                    await interaction.response.send_message(f"❌ Channel not found", ephemeral=True)
+            except ValueError:
+                await interaction.response.send_message("❌ Invalid channel ID", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
+        @config_group.command(name="personality", description="Manage personality for any channel remotely")
+        @app_commands.describe(
+            action="Action to perform",
+            guild_id="Server ID (or 'dm' for DM channels)",
+            channel_id="Channel ID",
+            slot="Personality slot (0-4)",
+            text="Personality text (for 'set' action)"
+        )
+        async def config_personality(
+            interaction: discord.Interaction,
+            action: Literal["set", "list", "clear", "clearall"],
+            guild_id: str,
+            channel_id: str,
+            slot: Optional[int] = None,
+            text: Optional[str] = None
+        ):
+            if not self.is_owner(interaction.user):
+                await interaction.response.send_message("❌ Owner only", ephemeral=True)
+                return
+
+            bot_id = self.bot.user.id
+
+            try:
+                # Parse guild_id
+                if guild_id.lower() == "dm":
+                    parsed_guild_id = None
+                else:
+                    parsed_guild_id = int(guild_id)
+
+                parsed_channel_id = int(channel_id)
+
+                if action == "list":
+                    personalities_str = self.personality_manager.list_personalities(bot_id, parsed_guild_id, parsed_channel_id)
+                    embed = discord.Embed(
+                        title=f"📋 Personalities for <#{channel_id}>",
+                        description=personalities_str,
+                        color=discord.Color.blue()
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+                elif action == "clearall":
+                    success, message = self.personality_manager.clear_all_personalities(bot_id, parsed_guild_id, parsed_channel_id)
+                    await interaction.response.send_message(message, ephemeral=True)
+
+                elif action == "clear":
+                    if slot is None:
+                        await interaction.response.send_message("❌ Please specify a slot number", ephemeral=True)
+                        return
+                    success, message = self.personality_manager.clear_personality(bot_id, parsed_guild_id, parsed_channel_id, slot)
+                    await interaction.response.send_message(message, ephemeral=True)
+
+                elif action == "set":
+                    if slot is None or text is None:
+                        await interaction.response.send_message("❌ Please specify both slot and text", ephemeral=True)
+                        return
+                    success, message = self.personality_manager.set_personality(bot_id, parsed_guild_id, parsed_channel_id, slot, text)
+                    await interaction.response.send_message(message, ephemeral=True)
+
+            except ValueError:
+                await interaction.response.send_message("❌ Invalid guild or channel ID", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
+        @config_group.command(name="clear", description="Clear conversation history for a channel")
+        @app_commands.describe(
+            guild_id="Server ID (or 'dm' for DM channels)",
+            channel_id="Channel ID"
+        )
+        async def config_clear(interaction: discord.Interaction, guild_id: str, channel_id: str):
+            if not self.is_owner(interaction.user):
+                await interaction.response.send_message("❌ Owner only", ephemeral=True)
+                return
+
+            try:
+                channel_int_id = int(channel_id)
+                if channel_int_id in self.conversations:
+                    self.conversations[channel_int_id].clear()
+                    await interaction.response.send_message(
+                        f"✅ Cleared conversation history for <#{channel_id}>",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.response.send_message(
+                        f"ℹ️ No active conversation for <#{channel_id}>",
+                        ephemeral=True
+                    )
+            except ValueError:
+                await interaction.response.send_message("❌ Invalid channel ID", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
+        @config_group.command(name="contextsize", description="Set context window size for a channel")
+        @app_commands.describe(
+            guild_id="Server ID (or 'dm' for DM channels)",
+            channel_id="Channel ID",
+            size="Number of messages to remember (1-100)"
+        )
+        async def config_contextsize(interaction: discord.Interaction, guild_id: str, channel_id: str, size: int):
+            if not self.is_owner(interaction.user):
+                await interaction.response.send_message("❌ Owner only", ephemeral=True)
+                return
+
+            if not 1 <= size <= 100:
+                await interaction.response.send_message("❌ Context size must be 1-100", ephemeral=True)
+                return
+
+            try:
+                # Store per-channel context size
+                channel_key = f"{guild_id}_{channel_id}"
+                if not hasattr(self, 'channel_context_sizes'):
+                    self.channel_context_sizes = {}
+                self.channel_context_sizes[channel_key] = size
+
+                # Update existing conversation if active
+                channel_int_id = int(channel_id)
+                if channel_int_id in self.conversations:
+                    self.conversations[channel_int_id].max_messages = size
+                    # Update the deque maxlen
+                    current_history = list(self.conversations[channel_int_id].history)
+                    self.conversations[channel_int_id].history = deque(current_history, maxlen=size)
+
+                await interaction.response.send_message(
+                    f"✅ Context window set to {size} messages for <#{channel_id}>",
+                    ephemeral=True
+                )
+            except ValueError:
+                await interaction.response.send_message("❌ Invalid channel ID", ephemeral=True)
+            except Exception as e:
+                await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
+        # Register the config group
+        self.bot.tree.add_command(config_group)
 
     async def _generate_response(self, messages: List[Dict[str, Any]]) -> Optional[str]:
         """Run LLM generation in executor to avoid blocking"""
