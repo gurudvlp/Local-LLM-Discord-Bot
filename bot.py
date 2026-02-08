@@ -23,12 +23,225 @@ import random
 from llm_providers import OllamaProvider, LMStudioProvider, ClaudeProvider, OpenAICodexProvider, OpenAIAPIProvider, CodexOAuthManager
 from moderation import ModerationService
 from personality_manager import PersonalityManager
+from dataclasses import dataclass
+import time
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class MessageQueueItem:
+    """Represents a message in the processing queue"""
+    message: discord.Message
+    priority: int
+    timestamp: float
+    is_bot: bool
+    author_id: int
+
+
+class ChannelMessageQueue:
+    """Priority queue for messages in a channel"""
+
+    def __init__(self, max_size: int = 50, message_ttl: float = 300):
+        self.queue: List[MessageQueueItem] = []
+        self.max_size = max_size
+        self.message_ttl = message_ttl
+        self.lock = asyncio.Lock()
+        self.has_messages = asyncio.Event()
+
+    async def add(self, item: MessageQueueItem) -> bool:
+        """Add item to queue with smart overflow handling. Returns True if added."""
+        async with self.lock:
+            # Remove stale messages first
+            await self._remove_stale_messages()
+
+            # Check if queue is full
+            if len(self.queue) >= self.max_size:
+                # Smart overflow handling
+                if item.priority >= 10:  # HIGH priority (human)
+                    # Try to drop oldest bot message
+                    bot_messages = [i for i, q in enumerate(self.queue) if q.priority < 10]
+                    if bot_messages:
+                        # Drop oldest bot message
+                        drop_idx = bot_messages[0]
+                        dropped = self.queue.pop(drop_idx)
+                        logger.info(f"Queue full: Dropped bot message to make room for human message")
+                    else:
+                        # Queue full of human messages, reject
+                        logger.warning(f"Queue full of human messages, rejecting new message")
+                        return False
+                else:
+                    # Low/medium priority, reject
+                    logger.info(f"Queue full, rejecting low/medium priority message")
+                    return False
+
+            # Add to queue
+            self.queue.append(item)
+            self.has_messages.set()
+            return True
+
+    async def get_next(self) -> Optional[MessageQueueItem]:
+        """Get highest priority non-stale message from queue"""
+        async with self.lock:
+            # Remove stale messages
+            await self._remove_stale_messages()
+
+            if not self.queue:
+                self.has_messages.clear()
+                return None
+
+            # Sort by priority (descending), then by timestamp (ascending/older first)
+            self.queue.sort(key=lambda x: (-x.priority, x.timestamp))
+
+            # Get highest priority message
+            item = self.queue.pop(0)
+
+            if not self.queue:
+                self.has_messages.clear()
+
+            return item
+
+    async def _remove_stale_messages(self):
+        """Remove messages older than TTL"""
+        current_time = time.time()
+        original_len = len(self.queue)
+        self.queue = [item for item in self.queue
+                     if current_time - item.timestamp <= self.message_ttl]
+
+        removed = original_len - len(self.queue)
+        if removed > 0:
+            logger.info(f"Removed {removed} stale message(s) from queue")
+
+    def size(self) -> int:
+        """Get current queue size"""
+        return len(self.queue)
+
+
+class BotStormProtection:
+    """Protects against bot message storms"""
+
+    def __init__(self,
+                 cooldown_seconds: float = 3,
+                 max_messages_per_minute: int = 10,
+                 consecutive_bot_threshold: int = 3,
+                 enabled: bool = True):
+        self.cooldown_seconds = cooldown_seconds
+        self.max_messages_per_minute = max_messages_per_minute
+        self.consecutive_bot_threshold = consecutive_bot_threshold
+        self.enabled = enabled
+
+        # Tracking dictionaries
+        self.last_send_time: Dict[int, float] = {}  # channel_id -> timestamp
+        self.send_history: Dict[int, List[float]] = {}  # channel_id -> timestamps
+        self.recent_messages_cache: Dict[int, List[Dict[str, Any]]] = {}  # channel_id -> message info
+
+    async def can_send_message(self, channel_id: int, is_dm: bool) -> tuple[bool, Optional[str]]:
+        """Check if bot can send a message (cooldown and rate limit checks)"""
+        if not self.enabled or is_dm:
+            return True, None
+
+        current_time = time.time()
+
+        # Check cooldown
+        last_send = self.last_send_time.get(channel_id, 0)
+        if current_time - last_send < self.cooldown_seconds:
+            wait_time = self.cooldown_seconds - (current_time - last_send)
+            return False, f"cooldown ({wait_time:.1f}s remaining)"
+
+        # Check rate limit
+        if channel_id not in self.send_history:
+            self.send_history[channel_id] = []
+
+        # Remove timestamps older than 60 seconds
+        self.send_history[channel_id] = [
+            t for t in self.send_history[channel_id]
+            if current_time - t < 60
+        ]
+
+        if len(self.send_history[channel_id]) >= self.max_messages_per_minute:
+            return False, "rate_limit"
+
+        return True, None
+
+    async def record_send(self, channel_id: int):
+        """Record that bot sent a message"""
+        current_time = time.time()
+        self.last_send_time[channel_id] = current_time
+
+        if channel_id not in self.send_history:
+            self.send_history[channel_id] = []
+
+        self.send_history[channel_id].append(current_time)
+
+    async def is_bot_storm(self, channel: discord.TextChannel, bot_user: discord.User, is_dm: bool) -> bool:
+        """Check if channel is experiencing a bot message storm"""
+        if not self.enabled or is_dm:
+            return False
+
+        try:
+            # Fetch recent messages
+            messages = []
+            async for msg in channel.history(limit=self.consecutive_bot_threshold + 1):
+                messages.append(msg)
+
+            # Update cache
+            self.recent_messages_cache[channel.id] = [
+                {'author_id': msg.author.id, 'is_bot': msg.author.bot}
+                for msg in messages
+            ]
+
+            # Count consecutive bot messages (excluding this bot)
+            bot_count = 0
+            for msg in messages:
+                if msg.author.bot and msg.author != bot_user:
+                    bot_count += 1
+                elif not msg.author.bot:
+                    # Found a human message, no storm
+                    return False
+
+            # If N consecutive messages are from bots, it's a storm
+            is_storm = bot_count >= self.consecutive_bot_threshold
+
+            if is_storm:
+                logger.warning(f"Bot storm detected in channel {channel.id}: {bot_count} consecutive bot messages")
+
+            return is_storm
+
+        except Exception as e:
+            logger.error(f"Error checking bot storm: {e}")
+            return False
+
+    def calculate_priority(self, message: discord.Message, is_storm: bool, is_dm: bool) -> Optional[int]:
+        """
+        Calculate message priority.
+        Returns None if message should be skipped (bot during storm).
+        Returns priority value otherwise.
+        """
+        is_bot = message.author.bot
+
+        # DMs: no storm protection
+        if is_dm:
+            return 10 if not is_bot else 5
+
+        # Storm protection not enabled
+        if not self.enabled:
+            return 10 if not is_bot else 5
+
+        # Human messages always HIGH priority
+        if not is_bot:
+            return 10
+
+        # Bot messages during storm: SKIP
+        if is_storm:
+            logger.info(f"Skipping bot message during storm from {message.author.name}")
+            return None
+
+        # Bot messages when no storm: MEDIUM priority
+        return 5
 
 
 class DataLogger:
@@ -263,9 +476,18 @@ class DiscordLLMBot:
         self.personality_manager = PersonalityManager()
 
         self.conversations: Dict[int, ConversationManager] = {}
-        self.processing: set = set()
         self.message_cache: Dict[int, Dict[str, Any]] = {}
         self.channel_context_sizes: Dict[str, int] = {}  # "guildid_channelid" -> size
+
+        # Queue system and bot storm protection
+        self.message_queues: Dict[int, ChannelMessageQueue] = {}
+        self.queue_workers: Dict[int, asyncio.Task] = {}
+        self.bot_protection = BotStormProtection(
+            cooldown_seconds=config.get('bot_cooldown_seconds', 3),
+            max_messages_per_minute=config.get('bot_max_messages_per_minute', 10),
+            consecutive_bot_threshold=config.get('consecutive_bot_threshold', 3),
+            enabled=config.get('enable_bot_storm_protection', True)
+        )
 
         self._setup_events()
         self._setup_commands()
@@ -334,6 +556,126 @@ class DiscordLLMBot:
                 return True
 
         return False
+
+    def _get_or_create_queue(self, channel_id: int) -> ChannelMessageQueue:
+        """Get existing queue or create new one for channel"""
+        if channel_id not in self.message_queues:
+            self.message_queues[channel_id] = ChannelMessageQueue(
+                max_size=self.config.get('queue_max_size', 50),
+                message_ttl=self.config.get('queue_message_ttl', 300)
+            )
+        return self.message_queues[channel_id]
+
+    async def _enqueue_message(self, message: discord.Message, is_dm: bool):
+        """Add message to queue with priority calculation"""
+        try:
+            # Check for bot storm
+            is_storm = await self.bot_protection.is_bot_storm(
+                message.channel,
+                self.bot.user,
+                is_dm
+            )
+
+            # Calculate priority (returns None if should skip)
+            priority = self.bot_protection.calculate_priority(message, is_storm, is_dm)
+
+            if priority is None:
+                # Skip this message (bot message during storm)
+                logger.info(f"Skipping message from {message.author.name} due to bot storm")
+                return
+
+            # Create queue item
+            queue_item = MessageQueueItem(
+                message=message,
+                priority=priority,
+                timestamp=time.time(),
+                is_bot=message.author.bot,
+                author_id=message.author.id
+            )
+
+            # Get or create queue
+            queue = self._get_or_create_queue(message.channel.id)
+
+            # Try to add to queue
+            added = await queue.add(queue_item)
+
+            if not added:
+                # Queue full, add reaction
+                await message.add_reaction('⏳')
+                logger.warning(f"Queue full for channel {message.channel.id}, message not queued")
+                return
+
+            # Ensure worker is running
+            if message.channel.id not in self.queue_workers or self.queue_workers[message.channel.id].done():
+                self.queue_workers[message.channel.id] = asyncio.create_task(
+                    self._queue_worker(message.channel.id)
+                )
+                logger.info(f"Started queue worker for channel {message.channel.id}")
+
+        except Exception as e:
+            logger.error(f"Error enqueueing message: {e}")
+            await message.add_reaction('❌')
+
+    async def _queue_worker(self, channel_id: int):
+        """Process messages from queue for a specific channel"""
+        logger.info(f"Queue worker started for channel {channel_id}")
+
+        try:
+            queue = self._get_or_create_queue(channel_id)
+
+            while True:
+                # Wait for messages (with timeout to allow cleanup)
+                try:
+                    await asyncio.wait_for(queue.has_messages.wait(), timeout=60)
+                except asyncio.TimeoutError:
+                    # Check if queue is empty, if so, exit worker
+                    if queue.size() == 0:
+                        logger.info(f"Queue worker for channel {channel_id} idle, exiting")
+                        break
+                    continue
+
+                # Get next message
+                queue_item = await queue.get_next()
+
+                if queue_item is None:
+                    continue
+
+                # Check if we can send (cooldown and rate limit)
+                message = queue_item.message
+                is_dm = isinstance(message.channel, discord.DMChannel)
+
+                can_send, reason = await self.bot_protection.can_send_message(channel_id, is_dm)
+
+                if not can_send:
+                    logger.info(f"Cannot send message yet: {reason}. Waiting...")
+                    # Re-queue with slightly lower priority and wait
+                    queue_item.priority = max(1, queue_item.priority - 1)
+                    await queue.add(queue_item)
+                    await asyncio.sleep(1)  # Brief wait before retry
+                    continue
+
+                # Process the message
+                logger.info(f"Processing queued message from {message.author.name} (priority: {queue_item.priority})")
+
+                try:
+                    await self._handle_chat_message_from_queue(message, is_dm)
+
+                    # Record send
+                    await self.bot_protection.record_send(channel_id)
+
+                except Exception as e:
+                    logger.error(f"Error processing queued message: {e}")
+
+        except asyncio.CancelledError:
+            logger.info(f"Queue worker for channel {channel_id} cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"Queue worker error for channel {channel_id}: {e}")
+        finally:
+            # Clean up worker
+            if channel_id in self.queue_workers:
+                del self.queue_workers[channel_id]
+            logger.info(f"Queue worker stopped for channel {channel_id}")
 
     def _resolve_system_prompt(self) -> str:
         """Resolve system prompt, handling file:// URIs"""
@@ -548,21 +890,16 @@ class DiscordLLMBot:
             is_command = message.content.startswith(self.bot.command_prefix)
 
             if should_respond:
-                await self._handle_chat_message(message, is_dm)
+                await self._enqueue_message(message, is_dm)
 
             await self.bot.process_commands(message)
     
-    async def _handle_chat_message(self, message: discord.Message, is_dm: bool):
+    async def _handle_chat_message_from_queue(self, message: discord.Message, is_dm: bool):
+        """Handle a message from the queue (no locking needed, queue handles it)"""
         # Skip if this is a prefix command (let process_commands handle it)
         if message.content.startswith(self.bot.command_prefix):
             return
 
-        if message.channel.id in self.processing:
-            await message.add_reaction('⏳')
-            return
-
-        self.processing.add(message.channel.id)
-        
         try:
             async with message.channel.typing():
                 # Remove bot mentions from content
@@ -663,23 +1000,17 @@ class DiscordLLMBot:
                         }
                 else:
                     await message.reply("❌ Failed to generate response. Please check if the LLM server is running.")
-        
-        finally:
-            self.processing.discard(message.channel.id)
+
+        except Exception as e:
+            logger.error(f"Error in _handle_chat_message_from_queue: {e}")
+            await message.reply("❌ An error occurred while processing your message.")
     
     def _setup_commands(self):
         
         @self.bot.tree.command(name="chat", description="Chat with your AI")
         @app_commands.describe(message="What do you want to say?")
         async def chat_command(interaction: discord.Interaction, message: str):
-            
-            if interaction.channel_id in self.processing:
-                await interaction.response.send_message(
-                    "⏳ Already processing a message. Please wait...",
-                    ephemeral=True
-                )
-                return
-            
+
             is_dm = isinstance(interaction.channel, discord.DMChannel)
             if not self.is_user_whitelisted(interaction.user, is_dm):
                 await interaction.response.send_message(
@@ -687,9 +1018,7 @@ class DiscordLLMBot:
                     ephemeral=True
                 )
                 return
-            
-            self.processing.add(interaction.channel_id)
-            
+
             try:
                 await interaction.response.defer(thinking=True)
                 raw_message = message
@@ -778,10 +1107,7 @@ class DiscordLLMBot:
                     await interaction.followup.send(embed=embed, ephemeral=True)
                 except:
                     pass
-            
-            finally:
-                self.processing.discard(interaction.channel_id)
-        
+
         @self.bot.tree.command(name="clear", description="Clear conversation history")
         async def clear_command(interaction: discord.Interaction):
             
@@ -1526,4 +1852,21 @@ class DiscordLLMBot:
     async def shutdown(self):
         """Gracefully shutdown the bot"""
         print("\n🛑 Shutting down bot...")
+
+        # Cancel all queue workers
+        if self.queue_workers:
+            print(f"   Cancelling {len(self.queue_workers)} queue worker(s)...")
+            for channel_id, worker in list(self.queue_workers.items()):
+                if not worker.done():
+                    worker.cancel()
+                    try:
+                        await worker
+                    except asyncio.CancelledError:
+                        pass
+
+            # Log queued message count
+            total_queued = sum(queue.size() for queue in self.message_queues.values())
+            if total_queued > 0:
+                print(f"   ⚠️  {total_queued} message(s) still in queue (will not be processed)")
+
         await self.bot.close()

@@ -14,6 +14,8 @@
 - 🖼️ **Vision Model Support** - Send images to vision-capable models
 - 📝 **Chat Logging** - Save conversations for fine-tuning datasets
 - 👍 **RLHF Data Collection** - Log user feedback for reinforcement learning
+- 🚦 **Message Queue System** - No messages lost, humans always prioritized
+- ⛈️ **Bot Storm Protection** - Prevents infinite bot conversation loops
 
 ## 🚀 Quick Start
 
