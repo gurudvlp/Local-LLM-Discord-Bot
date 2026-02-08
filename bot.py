@@ -1112,6 +1112,59 @@ class DiscordLLMBot:
             except Exception as e:
                 await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
 
+        @config_group.command(name="ask", description="Generate a message using LLM and send it to a channel")
+        @app_commands.describe(
+            channel_id="Channel ID to send to",
+            prompt="Instruction for what message to generate (e.g., 'Ask Ageara if she is online and wants to chat')"
+        )
+        async def config_ask(interaction: discord.Interaction, channel_id: str, prompt: str):
+            if not self.is_owner(interaction.user):
+                await interaction.response.send_message("❌ Owner only", ephemeral=True)
+                return
+
+            try:
+                channel = self.bot.get_channel(int(channel_id))
+                if not channel:
+                    await interaction.response.send_message(f"❌ Channel not found", ephemeral=True)
+                    return
+
+                # Defer the response since LLM generation might take time
+                await interaction.response.defer(ephemeral=True)
+
+                # Create a message list for the LLM to generate the message
+                llm_messages = [
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant generating a Discord message. Generate ONLY the message content that should be sent, without any additional formatting, quotes, or explanations. Be natural and conversational."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+
+                # Generate the message using the LLM
+                generated_message = await self._generate_response(llm_messages)
+
+                if generated_message:
+                    # Send the generated message to the channel
+                    await channel.send(generated_message)
+                    await interaction.followup.send(
+                        f"✅ Generated and sent to <#{channel_id}>:\n```\n{generated_message[:500]}{'...' if len(generated_message) > 500 else ''}\n```",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send("❌ Failed to generate message", ephemeral=True)
+
+            except ValueError:
+                await interaction.response.send_message("❌ Invalid channel ID", ephemeral=True)
+            except Exception as e:
+                # Handle both types of responses (deferred and not deferred)
+                try:
+                    await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+                except:
+                    await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
         @config_group.command(name="personality", description="Manage personality for any channel remotely")
         @app_commands.describe(
             action="Action to perform",
